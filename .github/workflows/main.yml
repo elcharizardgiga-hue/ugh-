@@ -30,7 +30,7 @@ jobs:
           rm -rf sideplay
           mkdir -p sideplay
 
-          unzip -q SidePlay-Node-v0.3.3-verified-spotify-track-handoff.zip -d sideplay
+          unzip -q SidePlay-Node-v0.3.5-aggressive-verified-spotify-handoff.zip -d sideplay
 
           echo "Extracted SidePlay:"
           ls -la sideplay
