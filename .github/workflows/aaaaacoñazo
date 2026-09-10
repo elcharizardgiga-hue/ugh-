@@ -1,0 +1,107 @@
+      - name: Build debug APK
+        working-directory: sideplay/android
+        run: |
+          set -e
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug \
+            --build-cache \
+            --stacktrace \
+            --no-daemon
+
+      - name: Prepare unsigned APK
+        run: |
+          set -e
+          APK="sideplay/android/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK" || {
+            echo "ERROR: Gradle completed but app-debug.apk was not found."
+            exit 1
+          }
+
+          mkdir -p signing release
+          cp "$APK" signing/SidePlay-unsigned.apk
+
+      - name: Generate signing key
+        run: |
+          set -e
+
+          keytool \
+            -genkeypair \
+            -v \
+            -keystore signing/sideplay-test.jks \
+            -storepass sideplay123 \
+            -keypass sideplay123 \
+            -alias sideplay \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=SidePlay, OU=Testing, O=SidePlay, C=DO"
+
+      - name: Zipalign APK
+        run: |
+          set -e
+
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign" \
+            -f -p 4 \
+            signing/SidePlay-unsigned.apk \
+            signing/SidePlay-aligned.apk
+
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign" \
+            -c -v 4 \
+            signing/SidePlay-aligned.apk
+
+      - name: Sign APK
+        run: |
+          set -e
+
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" sign \
+            --ks signing/sideplay-test.jks \
+            --ks-key-alias sideplay \
+            --ks-pass pass:sideplay123 \
+            --key-pass pass:sideplay123 \
+            --out release/SidePlay-v0.3.2.apk \
+            signing/SidePlay-aligned.apk
+
+      - name: Verify APK signature
+        run: |
+          set -e
+
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify \
+            --verbose \
+            --print-certs \
+            release/SidePlay-v0.3.2.apk
+
+          echo "✅ SidePlay v0.3.2 signature verified"
+
+      - name: Prepare release files
+        run: |
+          sha256sum release/SidePlay-v0.3.2.apk > release/SHA256.txt
+
+          cat > release/README.txt <<'EOF'
+          SidePlay v0.3.2
+          Spotify Handoff / No-PiP Test
+
+          Package:
+          app.sideplay.mobile
+
+          Install:
+          SidePlay-v0.3.2.apk
+
+          Changes:
+          - PiP removed
+          - Spotify handoff strengthened
+          - Explicit Spotify play after playFromSearch
+          - Spotify takeover is verified
+          - No silent YouTube fallback when Spotify mode is enabled
+          - Spotify handoff failures are shown explicitly
+          EOF
+
+          ls -lh release/
+
+      - name: Upload signed SidePlay APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SidePlay-v0.3.2-SIGNED-APK
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
