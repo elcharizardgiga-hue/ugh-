@@ -22,7 +22,7 @@ jobs:
           echo "Files in repository:"
           ls -la
 
-          test -f SidePlay-Node-v0.3.3-verified-spotify-track-handoff.zip || {
+          test -f a SidePlay-Node-v0.3.5-aggressive-verified-spotify-handoff.zip|| {
             echo "ERROR: SidePlay ZIP is missing from repository root."
             exit 1
           }
