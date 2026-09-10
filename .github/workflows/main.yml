@@ -22,7 +22,7 @@ jobs:
           echo "Files in repository:"
           ls -la
 
-          test -f SidePlay-Node-v0.3.2-spotify-handoff-no-pip.zip || {
+          test -f SidePlay-Node-v0.3.3-verified-spotify-track-handoff.zip || {
             echo "ERROR: SidePlay ZIP is missing from repository root."
             exit 1
           }
@@ -30,7 +30,7 @@ jobs:
           rm -rf sideplay
           mkdir -p sideplay
 
-          unzip -q SidePlay-Node-v0.3.2-spotify-handoff-no-pip.zip -d sideplay
+          unzip -q SidePlay-Node-v0.3.3-verified-spotify-track-handoff.zip -d sideplay
 
           echo "Extracted SidePlay:"
           ls -la sideplay
