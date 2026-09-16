@@ -2,11 +2,6 @@ name: SIDEPLAY 0.8.2 — FAST / STABLE / HEADLESS
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/build-sideplay-v0.8.2-AUTORUN.yml'
 
 permissions:
   contents: read
@@ -34,7 +29,8 @@ jobs:
           rm -rf sideplay release signing
           mkdir sideplay
           unzip -q "$ZIP" -d sideplay
-          test "$(node -p \"require('./sideplay/package.json').version\")" = '0.8.1'
+          VERSION="$(node -p 'require("./sideplay/package.json").version')"
+          test "$VERSION" = '0.8.1'
           rm -rf sideplay/android
 
       - name: Patch source to v0.8.2 fast/stable
@@ -46,7 +42,8 @@ jobs:
           set -euo pipefail
           printf '%s' "$PATCH_B64" | base64 --decode > /tmp/patch-sideplay-v082.py
           python3 /tmp/patch-sideplay-v082.py
-          test "$(node -p \"require('./package.json').version\")" = '0.8.2'
+          VERSION="$(node -p 'require("./package.json").version')"
+          test "$VERSION" = '0.8.2'
           grep -q 'SidePlay/0.8.2 Android' native/android/PlaybackService.java
           grep -q 'FFMPEG_INIT_LOCK' native/android/YtDlpPlugin.java
           grep -q 'SidePlayYtDlpUpdater' native/android/YtDlpPlugin.java
@@ -160,4 +157,5 @@ jobs:
 
           unzip -l "$OUT" | tee release/APK_CONTENTS.txt
           grep -q 'lib/arm64-v8a/libpython' release/APK_CONTENTS.txt
-          ! grep -q 'lib/x86/' rele
+          ! grep -q 'lib/x86/' release/APK_CONTENTS.txt
+          ! grep -q 'lib/x86_64/'
