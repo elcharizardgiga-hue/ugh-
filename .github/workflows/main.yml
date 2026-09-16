@@ -3,82 +3,63 @@ name: Build SidePlay APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
-    name: Build Signed Android APK
+    name: Build and verify Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
-
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # ============================================================
-      # 2. EXTRACT SIDEPLAY SOURCE
-      # ============================================================
-
-      - name: Extract SidePlay v0.3.5 source
+      - name: Prepare SidePlay source
         shell: bash
         run: |
-          set -e
-
-          echo "======================================"
-          echo "Repository files"
-          echo "======================================"
-          ls -la
-
-          ZIP_FILE="SidePlay-Node-v0.3.5-aggressive-verified-spotify-handoff.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo ""
-            echo "ERROR: $ZIP_FILE is missing from repository root."
-            exit 1
-          fi
-
-          echo ""
-          echo "Found SidePlay source:"
-          echo "$ZIP_FILE"
-
+          set -euo pipefail
           rm -rf sideplay
           mkdir -p sideplay
 
-          unzip -q "$ZIP_FILE" -d sideplay
-
-          echo ""
-          echo "======================================"
-          echo "Extracted SidePlay"
-          echo "======================================"
-          ls -la sideplay
-
-          if [ ! -f sideplay/package.json ]; then
-            echo "ERROR: package.json was not extracted."
-            exit 1
+          # Works both when the repository contains the expanded SidePlay source
+          # and when the repository only contains a SidePlay-Node-v*.zip archive.
+          if [ -f package.json ] && [ -f src/App.tsx ] && [ -f scripts/patch-android.mjs ]; then
+            echo "Using expanded SidePlay source from repository root."
+            rsync -a \
+              --exclude '.git' \
+              --exclude 'sideplay' \
+              --exclude 'release' \
+              --exclude 'signing' \
+              --exclude 'node_modules' \
+              --exclude 'dist' \
+              --exclude 'android/.gradle' \
+              --exclude 'android/app/build' \
+              ./ sideplay/
+          else
+            ZIP_FILE="$(find . -maxdepth 1 -type f -name 'SidePlay-Node-v*.zip' -printf '%f\n' | sort -V | tail -n 1)"
+            if [ -z "$ZIP_FILE" ] || [ ! -f "$ZIP_FILE" ]; then
+              echo "ERROR: Put the expanded SidePlay source OR a SidePlay-Node-v*.zip in the repository root."
+              exit 1
+            fi
+            echo "Using source archive: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d sideplay
           fi
 
-          if [ ! -f sideplay/src/App.tsx ]; then
-            echo "ERROR: src/App.tsx was not extracted."
-            exit 1
-          fi
-
-          if [ ! -f sideplay/scripts/patch-android.mjs ]; then
-            echo "ERROR: scripts/patch-android.mjs was not extracted."
-            exit 1
-          fi
-
-          echo ""
+          test -f sideplay/package.json
+          test -f sideplay/src/App.tsx
+          test -f sideplay/scripts/patch-android.mjs
+          test -f sideplay/native/android/PlaybackService.java
+          test -f sideplay/native/android/YtDlpPlugin.java
+          test -f sideplay/native/android/MediaSafety.java
           echo "✅ SidePlay source verified"
-
-      # ============================================================
-      # 3. NODE
-      # ============================================================
 
       - name: Set up Node 24
         uses: actions/setup-node@v7
@@ -86,439 +67,213 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      # ============================================================
-      # 4. JAVA
-      # ============================================================
-
       - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      # ============================================================
-      # 5. ANDROID SDK
-      # ============================================================
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Verify build environment
-        shell: bash
-        run: |
-          set -e
-
-          echo "Node:"
-          node --version
-
-          echo ""
-          echo "NPM:"
-          npm --version
-
-          echo ""
-          echo "Java:"
-          java -version
-
-          echo ""
-          echo "Android SDK:"
-          echo "$ANDROID_SDK_ROOT"
-
-          test -x "$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
-          test -x "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
-
-          echo ""
-          echo "✅ Android build tools available"
-
-      # ============================================================
-      # 6. INSTALL JS DEPENDENCIES
-      # ============================================================
-
-      - name: Install JavaScript dependencies
+      - name: Install dependencies
         working-directory: sideplay
-        shell: bash
-        run: |
-          set -e
-
-          npm install --no-audit --no-fund
-
-      # ============================================================
-      # 7. BUILD REACT/VITE APP
-      # ============================================================
+        run: npm install --no-audit --no-fund
 
       - name: Build SidePlay web UI
         working-directory: sideplay
-        shell: bash
-        run: |
-          set -e
-
-          npm run build
-
-          echo ""
-          echo "Checking Vite output..."
-
-          test -d dist || {
-            echo "ERROR: dist directory was not generated."
-            exit 1
-          }
-
-          echo "✅ Web UI built"
-
-      # ============================================================
-      # 8. CREATE / SYNC CAPACITOR ANDROID PROJECT
-      # ============================================================
+        run: npm run build
 
       - name: Create and sync Capacitor Android project
         working-directory: sideplay
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           if [ ! -d android ]; then
-            echo "Creating Capacitor Android project..."
             npx cap add android
           fi
-
-          echo "Syncing Capacitor..."
           npx cap sync android
 
-          test -d android/app || {
-            echo "ERROR: Capacitor Android project is missing."
-            exit 1
-          }
-
-          echo "✅ Capacitor Android project ready"
-
-      # ============================================================
-      # 9. APPLY SIDEPLAY NATIVE PATCHES
-      # ============================================================
-
-      - name: Apply SidePlay native Android patches
+      - name: Apply SidePlay native patches
         working-directory: sideplay
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           node scripts/patch-android.mjs
-
-          echo ""
-          echo "======================================"
-          echo "Checking SidePlay native classes"
-          echo "======================================"
-
+          test -f android/app/src/main/java/app/sideplay/mobile/MainActivity.java
           test -f android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
           test -f android/app/src/main/java/app/sideplay/mobile/BackgroundAudioPlugin.java
-          test -f android/app/src/main/java/app/sideplay/mobile/OfflineMediaPlugin.java
-          test -f android/app/src/main/java/app/sideplay/mobile/SpotifySessionPlugin.java
-          test -f android/app/src/main/java/app/sideplay/mobile/SpotifySessionListenerService.java
-          test -f android/app/src/main/java/app/sideplay/mobile/MainActivity.java
+          test -f android/app/src/main/java/app/sideplay/mobile/YtDlpPlugin.java
+          grep -q 'youtubedl-android:library:0.18.1' android/app/build.gradle
+          grep -q 'youtubedl-android:ffmpeg:0.18.1' android/app/build.gradle
+          grep -q 'android:foregroundServiceType="mediaPlayback"' android/app/src/main/AndroidManifest.xml
+          grep -q 'androidx.media3.session.MediaButtonReceiver' android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.ACCESS_NETWORK_STATE' android/app/src/main/AndroidManifest.xml
+          grep -q 'android:extractNativeLibs="true"' android/app/src/main/AndroidManifest.xml
+          echo "✅ Native playback/background patch verified"
 
-          echo "✅ Native SidePlay classes present"
-
-      # ============================================================
-      # 10. CHECK MANIFEST
-      # ============================================================
-
-      - name: Inspect generated Android manifest
-        working-directory: sideplay
-        shell: bash
-        run: |
-          set -e
-
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-
-          test -f "$MANIFEST"
-
-          echo "======================================"
-          echo "Spotify listener"
-          echo "======================================"
-          grep -n "SpotifySessionListenerService" "$MANIFEST" || true
-
-          echo ""
-          echo "======================================"
-          echo "Playback service"
-          echo "======================================"
-          grep -n "PlaybackService" "$MANIFEST" || true
-
-          echo ""
-          echo "======================================"
-          echo "PiP check"
-          echo "======================================"
-
-          if grep -qi "supportsPictureInPicture.*true" "$MANIFEST"; then
-            echo "ERROR: PiP is unexpectedly enabled."
-            exit 1
-          else
-            echo "✅ PiP is not enabled"
-          fi
-
-      # ============================================================
-      # 11. BUILD APK WITH GRADLE
-      # ============================================================
-
-      - name: Build SidePlay Android APK
+      - name: Build Android APK
         working-directory: sideplay/android
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           chmod +x gradlew
+          ./gradlew :app:clean :app:assembleRelease --build-cache --stacktrace --no-daemon
 
-          ./gradlew :app:assembleDebug \
-            --build-cache \
-            --stacktrace \
-            --no-daemon
-
-          echo ""
-          echo "✅ Gradle build completed"
-
-      # ============================================================
-      # 12. LOCATE APK
-      # ============================================================
-
-      - name: Prepare unsigned APK
+      - name: Prepare APK
         shell: bash
         run: |
-          set -e
-
-          APK="sideplay/android/app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: Gradle completed but app-debug.apk was not found."
-            echo ""
-            echo "Available APK files:"
-            find sideplay/android -type f -name "*.apk" -print || true
+          set -euo pipefail
+          APK="$(find sideplay/android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*-release-unsigned.apk' | head -n 1)"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "ERROR: Gradle finished but no unsigned release APK was found."
+            find sideplay/android/app/build/outputs/apk -maxdepth 3 -type f -print || true
             exit 1
           fi
-
-          mkdir -p signing
-          mkdir -p release
-
+          mkdir -p signing release
           cp "$APK" signing/SidePlay-unsigned.apk
 
-          echo "Unsigned APK:"
-          ls -lh signing/SidePlay-unsigned.apk
+      - name: Prepare signing key
+        id: signing
+        shell: bash
+        env:
+          SIDEPLAY_KEYSTORE_B64: ${{ secrets.SIDEPLAY_KEYSTORE_B64 }}
+          SIDEPLAY_KEYSTORE_PASSWORD: ${{ secrets.SIDEPLAY_KEYSTORE_PASSWORD }}
+          SIDEPLAY_KEY_ALIAS: ${{ secrets.SIDEPLAY_KEY_ALIAS }}
+          SIDEPLAY_KEY_PASSWORD: ${{ secrets.SIDEPLAY_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]; then
+            echo "$SIDEPLAY_KEYSTORE_B64" | base64 --decode > signing/sideplay.jks
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "SIDEPLAY_SIGN_KS_PASS=$SIDEPLAY_KEYSTORE_PASSWORD"
+              echo "SIDEPLAY_SIGN_KEY_ALIAS=$SIDEPLAY_KEY_ALIAS"
+              echo "SIDEPLAY_SIGN_KEY_PASS=$SIDEPLAY_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "✅ Using persistent GitHub signing key"
+          else
+            keytool -genkeypair -v \
+              -keystore signing/sideplay.jks \
+              -storepass sideplay123 \
+              -keypass sideplay123 \
+              -alias sideplay \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SidePlay CI Test, OU=Testing, O=SidePlay, C=DO"
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "SIDEPLAY_SIGN_KS_PASS=sideplay123"
+              echo "SIDEPLAY_SIGN_KEY_ALIAS=sideplay"
+              echo "SIDEPLAY_SIGN_KEY_PASS=sideplay123"
+            } >> "$GITHUB_ENV"
+            echo "⚠️ No GitHub signing secrets configured. This APK is installable, but future CI builds will not update it in-place."
+          fi
 
-      # ============================================================
-      # 13. GENERATE SIGNING KEY
-      # ============================================================
-
-      - name: Generate SidePlay signing key
+      - name: Zipalign APK
         shell: bash
         run: |
-          set -e
-
-          keytool \
-            -genkeypair \
-            -v \
-            -keystore signing/sideplay-test.jks \
-            -storepass sideplay123 \
-            -keypass sideplay123 \
-            -alias sideplay \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=SidePlay, OU=Testing, O=SidePlay, C=DO"
-
-          test -f signing/sideplay-test.jks
-
-          echo ""
-          echo "✅ Signing key generated"
-
-      # ============================================================
-      # 14. ZIPALIGN
-      # ============================================================
-
-      - name: Zipalign SidePlay APK
-        shell: bash
-        run: |
-          set -e
-
+          set -euo pipefail
           ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
+          "$ZIPALIGN" -f -p 4 signing/SidePlay-unsigned.apk signing/SidePlay-aligned.apk
+          "$ZIPALIGN" -c -v 4 signing/SidePlay-aligned.apk
 
-          "$ZIPALIGN" \
-            -f \
-            -p \
-            4 \
-            signing/SidePlay-unsigned.apk \
-            signing/SidePlay-aligned.apk
-
-          "$ZIPALIGN" \
-            -c \
-            -v \
-            4 \
-            signing/SidePlay-aligned.apk
-
-          echo ""
-          echo "✅ APK zipalignment verified"
-
-      # ============================================================
-      # 15. SIGN APK
-      # ============================================================
-
-      - name: Sign SidePlay APK
+      - name: Sign APK
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
-
           "$APKSIGNER" sign \
-            --ks signing/sideplay-test.jks \
-            --ks-key-alias sideplay \
-            --ks-pass pass:sideplay123 \
-            --key-pass pass:sideplay123 \
-            --out release/SidePlay-v0.3.5.apk \
+            --ks signing/sideplay.jks \
+            --ks-key-alias "$SIDEPLAY_SIGN_KEY_ALIAS" \
+            --ks-pass "pass:$SIDEPLAY_SIGN_KS_PASS" \
+            --key-pass "pass:$SIDEPLAY_SIGN_KEY_PASS" \
+            --out release/SidePlay-v0.8.0.apk \
             signing/SidePlay-aligned.apk
 
-          test -f release/SidePlay-v0.3.5.apk
-
-          echo ""
-          echo "✅ APK signed"
-
-      # ============================================================
-      # 16. VERIFY SIGNATURE
-      # ============================================================
-
-      - name: Verify SidePlay APK signature
+      - name: Verify final APK
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
+          ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
+          AAPT2="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt2"
+          APK="release/SidePlay-v0.8.0.apk"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          "$ZIPALIGN" -c -v 4 "$APK"
+          "$AAPT2" dump badging "$APK" | tee release/APK_BADGING.txt
+          grep -q "package: name='app.sideplay.mobile'" release/APK_BADGING.txt
+          sha256sum "$APK" > release/SHA256.txt
+          echo "✅ Final APK is signed, aligned and parseable"
 
-          echo "======================================"
-          echo "VERIFYING SIDEPLAY APK SIGNATURE"
-          echo "======================================"
-
-          "$APKSIGNER" verify \
-            --verbose \
-            --print-certs \
-            release/SidePlay-v0.3.5.apk
-
-          echo ""
-          echo "======================================"
-          echo "✅ SIDEPLAY APK SIGNATURE VERIFIED"
-          echo "======================================"
-
-      # ============================================================
-      # 17. FINAL ZIPALIGN CHECK
-      # ============================================================
-
-      - name: Verify final APK alignment
+      - name: Prepare release notes
         shell: bash
         run: |
-          set -e
+          cat > release/README.txt <<'TXT'
+          SidePlay v0.8.0 — music-first hi-fi product polish
 
-          "$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign" \
-            -c \
-            -v \
-            4 \
-            release/SidePlay-v0.3.5.apk
+          Install: SidePlay-v0.8.0.apk
+          Package: app.sideplay.mobile
 
-          echo ""
-          echo "✅ Final APK alignment verified"
+          Background playback:
+          - Media3 MediaSessionService owns native playback outside the Activity/WebView
+          - foreground media notification + lock-screen/Bluetooth controls
+          - wake/network mode for active streaming
+          - survives task swipe while a native item exists
+          - reconnects after network restoration
+          - stable/local native items support Media3 playback resumption after service death
+          - session-cookie/browser captures remain intentionally ephemeral and are re-resolved in SidePlay instead of persisting credentials
 
-      # ============================================================
-      # 18. APK PACKAGE INFORMATION
-      # ============================================================
+          Engine:
+          - yt-dlp first-line provider extraction
+          - generic resolver + Media Catcher fallbacks
+          - HLS/DASH/RTSP/direct/local playback
+          - yt-dlp + FFmpeg adaptive offline assembly for clear sources
+          - malicious-download safety gate before vault admission
+          TXT
 
-      - name: Inspect final APK
-        shell: bash
-        run: |
-          set -e
-
-          AAPT="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt"
-
-          echo "======================================"
-          echo "FINAL APK"
-          echo "======================================"
-
-          ls -lh release/SidePlay-v0.3.5.apk
-
-          echo ""
-          echo "======================================"
-          echo "PACKAGE INFORMATION"
-          echo "======================================"
-
-          "$AAPT" dump badging release/SidePlay-v0.3.5.apk | head -n 25
-
-      # ============================================================
-      # 19. HASH + README
-      # ============================================================
-
-      - name: Prepare release files
-        shell: bash
-        run: |
-          set -e
-
-          sha256sum \
-            release/SidePlay-v0.3.5.apk \
-            > release/SHA256.txt
-
-          cat > release/README.txt <<'EOF'
-          SidePlay v0.3.5
-          Aggressive Verified Spotify Handoff
-          No PiP
-
-          Android package:
-          app.sideplay.mobile
-
-          INSTALL:
-
-          Install:
-          SidePlay-v0.3.5.apk
-
-          SPOTIFY SETUP:
-
-          1. Spotify must be installed and logged in.
-          2. Open Spotify and play a song once.
-          3. Open SidePlay.
-          4. Open Settings.
-          5. Grant SidePlay Notification Access.
-          6. Return to SidePlay.
-          7. Refresh Spotify engine status.
-          8. Enable "Prefer Spotify for online tracks".
-
-          v0.3.5 HANDOFF:
-
-          SidePlay attempts multiple Spotify handoff strategies.
-          Spotify playback is only considered successful after
-          SidePlay verifies the requested track using Spotify's
-          active media-session metadata.
-
-          PiP is disabled.
-
-          The final APK was:
-          - built with Gradle
-          - zipaligned
-          - explicitly signed
-          - signature verified
-          - alignment verified
-          EOF
-
-          echo ""
-          echo "======================================"
-          echo "RELEASE CONTENTS"
-          echo "======================================"
-
-          ls -lh release/
-
-          echo ""
-          cat release/SHA256.txt
-
-      # ============================================================
-      # 20. UPLOAD APK
-      # ============================================================
-
-      - name: Upload signed SidePlay APK
+      - name: Upload verified APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SidePlay-v0.3.5-SIGNED-APK
+          name: SidePlay-v0.8.0-VERIFIED-APK
           path: |
-            release/SidePlay-v0.3.5.apk
+            release/SidePlay-v0.8.0.apk
             release/SHA256.txt
+            release/APK_BADGING.txt
             release/README.txt
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      - name: Publish GitHub Release for version tag
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.stable == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              release/SidePlay-v0.8.0.apk \
+              release/SHA256.txt \
+              release/README.txt \
+              --clobber
+          else
+            gh release create "$TAG" \
+              release/SidePlay-v0.8.0.apk \
+              release/SHA256.txt \
+              release/README.txt \
+              --title "SidePlay $TAG" \
+              --generate-notes
+          fi
+          echo "✅ GitHub Release published: $TAG"
+
+      - name: Explain skipped tag release without stable signing
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.stable != 'true'
+        shell: bash
+        run: |
+          echo "::warning::Tag build succeeded, but GitHub Release publication was skipped because persistent signing secrets are not configured. See GITHUB_DEPLOY.md."
+          
