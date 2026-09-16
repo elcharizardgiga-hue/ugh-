@@ -1,20 +1,17 @@
-name: Build SidePlay APK
+name: SidePlay v0.8.1 — STAY INSIDE APK
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
     tags:
-      - 'v*'
+      - 'v0.8.1'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build and verify Android APK
+    name: SidePlay 0.8.1 — stay-inside native playback
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -22,35 +19,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Prepare SidePlay source
+      - name: Show EXACT workflow/run
+        shell: bash
+        run: |
+          echo "WORKFLOW: $GITHUB_WORKFLOW"
+          echo "RUN NUMBER: $GITHUB_RUN_NUMBER"
+          echo "REF: $GITHUB_REF"
+          echo "COMMIT: $GITHUB_SHA"
+          echo "Workflow files currently in repo:"
+          find .github/workflows -maxdepth 1 -type f -print 2>/dev/null || true
+
+      - name: Prepare EXACT SidePlay v0.8.1 source
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf sideplay
+          rm -rf sideplay release signing
           mkdir -p sideplay
 
-          # Works both when the repository contains the expanded SidePlay source
-          # and when the repository only contains a SidePlay-Node-v*.zip archive.
-          if [ -f package.json ] && [ -f src/App.tsx ] && [ -f scripts/patch-android.mjs ]; then
-            echo "Using expanded SidePlay source from repository root."
+          # Prefer the exact v0.8.1 archive so stale expanded Android state cannot leak in.
+          ZIP_FILE="$(find . -maxdepth 1 -type f -name 'SidePlay-Node-v0.8.1-STAY-INSIDE-BACKGROUND.zip' -printf '%f\n' | head -n 1)"
+
+          if [ -n "${ZIP_FILE:-}" ] && [ -f "$ZIP_FILE" ]; then
+            echo "Using EXACT archive: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d sideplay
+          elif [ -f package.json ] && [ -f src/App.tsx ] && [ -f scripts/patch-android.mjs ]; then
+            echo "Using expanded source — but deliberately NOT copying android/"
             rsync -a \
               --exclude '.git' \
+              --exclude '.github' \
+              --exclude 'android' \
               --exclude 'sideplay' \
               --exclude 'release' \
               --exclude 'signing' \
               --exclude 'node_modules' \
               --exclude 'dist' \
-              --exclude 'android/.gradle' \
-              --exclude 'android/app/build' \
               ./ sideplay/
           else
-            ZIP_FILE="$(find . -maxdepth 1 -type f -name 'SidePlay-Node-v*.zip' -printf '%f\n' | sort -V | tail -n 1)"
-            if [ -z "$ZIP_FILE" ] || [ ! -f "$ZIP_FILE" ]; then
-              echo "ERROR: Put the expanded SidePlay source OR a SidePlay-Node-v*.zip in the repository root."
-              exit 1
-            fi
-            echo "Using source archive: $ZIP_FILE"
-            unzip -q "$ZIP_FILE" -d sideplay
+            echo "ERROR: SidePlay v0.8.1 source not found."
+            echo "Put SidePlay-Node-v0.8.1-STAY-INSIDE-BACKGROUND.zip in repo root."
+            exit 1
           fi
 
           test -f sideplay/package.json
@@ -58,8 +65,15 @@ jobs:
           test -f sideplay/scripts/patch-android.mjs
           test -f sideplay/native/android/PlaybackService.java
           test -f sideplay/native/android/YtDlpPlugin.java
-          test -f sideplay/native/android/MediaSafety.java
-          echo "✅ SidePlay source verified"
+
+          VERSION="$(node -p "require('./sideplay/package.json').version")"
+          echo "SOURCE VERSION = $VERSION"
+          test "$VERSION" = "0.8.1"
+
+          # Absolutely refuse any stale generated Android shell from the archive/source.
+          rm -rf sideplay/android
+
+          echo "✅ Clean SidePlay 0.8.1 source prepared"
 
       - name: Set up Node 24
         uses: actions/setup-node@v7
@@ -78,62 +92,84 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Install dependencies
+      - name: Install JS dependencies
         working-directory: sideplay
         run: npm install --no-audit --no-fund
 
-      - name: Build SidePlay web UI
+      - name: Build SidePlay web app
         working-directory: sideplay
         run: npm run build
 
-      - name: Create and sync Capacitor Android project
+      - name: Generate BRAND-NEW Android shell
         working-directory: sideplay
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d android ]; then
-            npx cap add android
-          fi
+          test ! -d android
+          npx cap add android
           npx cap sync android
+          echo "✅ Fresh Capacitor Android project generated"
 
-      - name: Apply SidePlay native patches
+      - name: Apply SidePlay native engine patches
         working-directory: sideplay
         shell: bash
         run: |
           set -euo pipefail
           node scripts/patch-android.mjs
+
           test -f android/app/src/main/java/app/sideplay/mobile/MainActivity.java
           test -f android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
           test -f android/app/src/main/java/app/sideplay/mobile/BackgroundAudioPlugin.java
           test -f android/app/src/main/java/app/sideplay/mobile/YtDlpPlugin.java
+          test -f android/app/src/main/java/app/sideplay/mobile/MediaSafety.java
+
           grep -q 'youtubedl-android:library:0.18.1' android/app/build.gradle
           grep -q 'youtubedl-android:ffmpeg:0.18.1' android/app/build.gradle
           grep -q 'android:foregroundServiceType="mediaPlayback"' android/app/src/main/AndroidManifest.xml
           grep -q 'androidx.media3.session.MediaButtonReceiver' android/app/src/main/AndroidManifest.xml
-          grep -q 'android.permission.ACCESS_NETWORK_STATE' android/app/src/main/AndroidManifest.xml
-          grep -q 'android:extractNativeLibs="true"' android/app/src/main/AndroidManifest.xml
-          echo "✅ Native playback/background patch verified"
 
-      - name: Build Android APK
+      - name: FORCE Android APK version to 0.8.1
+        working-directory: sideplay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('android/app/build.gradle')
+          s = p.read_text()
+
+          s2, n_code = re.subn(r'(?m)^(\s*)versionCode\s+\d+\s*$', r'\1versionCode 801', s, count=1)
+          s3, n_name = re.subn(r'(?m)^(\s*)versionName\s+["\'][^"\']+["\']\s*$', r'\1versionName "0.8.1"', s2, count=1)
+
+          if n_code != 1 or n_name != 1:
+              raise SystemExit(f'Could not force Android version metadata: versionCode replacements={n_code}, versionName replacements={n_name}')
+
+          p.write_text(s3)
+          PY
+
+          grep -n 'versionCode 801' android/app/build.gradle
+          grep -n 'versionName "0.8.1"' android/app/build.gradle
+          echo "✅ Android version metadata forced to 0.8.1 / 801"
+
+      - name: Build CLEAN release APK
         working-directory: sideplay/android
         shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew :app:clean :app:assembleRelease --build-cache --stacktrace --no-daemon
+          ./gradlew :app:clean :app:assembleRelease --stacktrace --no-daemon
 
-      - name: Prepare APK
+      - name: Locate unsigned APK
         shell: bash
         run: |
           set -euo pipefail
           APK="$(find sideplay/android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*-release-unsigned.apk' | head -n 1)"
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            echo "ERROR: Gradle finished but no unsigned release APK was found."
-            find sideplay/android/app/build/outputs/apk -maxdepth 3 -type f -print || true
-            exit 1
-          fi
+          test -n "${APK:-}"
+          test -f "$APK"
           mkdir -p signing release
-          cp "$APK" signing/SidePlay-unsigned.apk
+          cp "$APK" signing/SidePlay-v0.8.1-unsigned.apk
 
       - name: Prepare signing key
         id: signing
@@ -145,15 +181,14 @@ jobs:
           SIDEPLAY_KEY_PASSWORD: ${{ secrets.SIDEPLAY_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
           if [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]; then
             echo "$SIDEPLAY_KEYSTORE_B64" | base64 --decode > signing/sideplay.jks
             echo "stable=true" >> "$GITHUB_OUTPUT"
-            {
-              echo "SIDEPLAY_SIGN_KS_PASS=$SIDEPLAY_KEYSTORE_PASSWORD"
-              echo "SIDEPLAY_SIGN_KEY_ALIAS=$SIDEPLAY_KEY_ALIAS"
-              echo "SIDEPLAY_SIGN_KEY_PASS=$SIDEPLAY_KEY_PASSWORD"
-            } >> "$GITHUB_ENV"
-            echo "✅ Using persistent GitHub signing key"
+            echo "SIDEPLAY_SIGN_KS_PASS=$SIDEPLAY_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "SIDEPLAY_SIGN_KEY_ALIAS=$SIDEPLAY_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIDEPLAY_SIGN_KEY_PASS=$SIDEPLAY_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "✅ Persistent signing key loaded"
           else
             keytool -genkeypair -v \
               -keystore signing/sideplay.jks \
@@ -163,117 +198,108 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=SidePlay CI Test, OU=Testing, O=SidePlay, C=DO"
+              -dname "CN=SidePlay CI, OU=Testing, O=SidePlay, C=DO"
+
             echo "stable=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "SIDEPLAY_SIGN_KS_PASS=sideplay123"
-              echo "SIDEPLAY_SIGN_KEY_ALIAS=sideplay"
-              echo "SIDEPLAY_SIGN_KEY_PASS=sideplay123"
-            } >> "$GITHUB_ENV"
-            echo "⚠️ No GitHub signing secrets configured. This APK is installable, but future CI builds will not update it in-place."
+            echo "SIDEPLAY_SIGN_KS_PASS=sideplay123" >> "$GITHUB_ENV"
+            echo "SIDEPLAY_SIGN_KEY_ALIAS=sideplay" >> "$GITHUB_ENV"
+            echo "SIDEPLAY_SIGN_KEY_PASS=sideplay123" >> "$GITHUB_ENV"
+            echo "⚠️ Temporary signing key used"
           fi
 
       - name: Zipalign APK
         shell: bash
         run: |
           set -euo pipefail
-          ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
-          "$ZIPALIGN" -f -p 4 signing/SidePlay-unsigned.apk signing/SidePlay-aligned.apk
-          "$ZIPALIGN" -c -v 4 signing/SidePlay-aligned.apk
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign" -f -p 4 \
+            signing/SidePlay-v0.8.1-unsigned.apk \
+            signing/SidePlay-v0.8.1-aligned.apk
 
       - name: Sign APK
         shell: bash
         run: |
           set -euo pipefail
-          APKSIGNER="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
-          "$APKSIGNER" sign \
+          OUT="release/SidePlay-v0.8.1-RUN-${GITHUB_RUN_NUMBER}.apk"
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" sign \
             --ks signing/sideplay.jks \
             --ks-key-alias "$SIDEPLAY_SIGN_KEY_ALIAS" \
             --ks-pass "pass:$SIDEPLAY_SIGN_KS_PASS" \
             --key-pass "pass:$SIDEPLAY_SIGN_KEY_PASS" \
-            --out release/SidePlay-v0.8.0.apk \
-            signing/SidePlay-aligned.apk
+            --out "$OUT" \
+            signing/SidePlay-v0.8.1-aligned.apk
+          echo "APK_PATH=$OUT" >> "$GITHUB_ENV"
 
-      - name: Verify final APK
+      - name: PROVE final APK is 0.8.1 — or FAIL
         shell: bash
         run: |
           set -euo pipefail
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
           ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
           AAPT2="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt2"
-          APK="release/SidePlay-v0.8.0.apk"
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
-          "$ZIPALIGN" -c -v 4 "$APK"
-          "$AAPT2" dump badging "$APK" | tee release/APK_BADGING.txt
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK_PATH"
+          "$ZIPALIGN" -c -v 4 "$APK_PATH"
+          "$AAPT2" dump badging "$APK_PATH" | tee release/APK_BADGING.txt
+
           grep -q "package: name='app.sideplay.mobile'" release/APK_BADGING.txt
-          sha256sum "$APK" > release/SHA256.txt
-          echo "✅ Final APK is signed, aligned and parseable"
+          grep -q "versionCode='801'" release/APK_BADGING.txt
+          grep -q "versionName='0.8.1'" release/APK_BADGING.txt
 
-      - name: Prepare release notes
-        shell: bash
-        run: |
-          cat > release/README.txt <<'TXT'
-          SidePlay v0.8.0 — music-first hi-fi product polish
+          sha256sum "$APK_PATH" | tee release/SHA256.txt
 
-          Install: SidePlay-v0.8.0.apk
-          Package: app.sideplay.mobile
+          cat > release/THIS_IS_THE_ONE.txt <<EOF
+          THIS IS SIDEPLAY v0.8.1
+          GitHub run: $GITHUB_RUN_NUMBER
+          Commit: $GITHUB_SHA
+          APK: $(basename "$APK_PATH")
+          Android versionName: 0.8.1
+          Android versionCode: 801
+          EOF
 
-          Background playback:
-          - Media3 MediaSessionService owns native playback outside the Activity/WebView
-          - foreground media notification + lock-screen/Bluetooth controls
-          - wake/network mode for active streaming
-          - survives task swipe while a native item exists
-          - reconnects after network restoration
-          - stable/local native items support Media3 playback resumption after service death
-          - session-cookie/browser captures remain intentionally ephemeral and are re-resolved in SidePlay instead of persisting credentials
+          echo "========================================================"
+          echo " VERIFIED APK VERSION NAME: 0.8.1"
+          echo " VERIFIED APK VERSION CODE: 801"
+          echo " APK: $(basename "$APK_PATH")"
+          echo "========================================================"
 
-          Engine:
-          - yt-dlp first-line provider extraction
-          - generic resolver + Media Catcher fallbacks
-          - HLS/DASH/RTSP/direct/local playback
-          - yt-dlp + FFmpeg adaptive offline assembly for clear sources
-          - malicious-download safety gate before vault admission
-          TXT
-
-      - name: Upload verified APK artifact
+      - name: Upload THE ONLY artifact you should download
         uses: actions/upload-artifact@v4
         with:
-          name: SidePlay-v0.8.0-VERIFIED-APK
+          name: USE_THIS__SIDEPLAY_0.8.1_STAY_INSIDE__RUN-${{ github.run_number }}
           path: |
-            release/SidePlay-v0.8.0.apk
+            ${{ env.APK_PATH }}
             release/SHA256.txt
             release/APK_BADGING.txt
-            release/README.txt
+            release/THIS_IS_THE_ONE.txt
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish GitHub Release for version tag
-        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.stable == 'true'
+      - name: Publish/refresh v0.8.1 Release and MARK IT LATEST
+        if: github.ref == 'refs/tags/v0.8.1' && steps.signing.outputs.stable == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="$GITHUB_REF_NAME"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              release/SidePlay-v0.8.0.apk \
-              release/SHA256.txt \
-              release/README.txt \
-              --clobber
-          else
-            gh release create "$TAG" \
-              release/SidePlay-v0.8.0.apk \
-              release/SHA256.txt \
-              release/README.txt \
-              --title "SidePlay $TAG" \
-              --generate-notes
-          fi
-          echo "✅ GitHub Release published: $TAG"
 
-      - name: Explain skipped tag release without stable signing
-        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.stable != 'true'
-        shell: bash
-        run: |
-          echo "::warning::Tag build succeeded, but GitHub Release publication was skipped because persistent signing secrets are not configured. See GITHUB_DEPLOY.md."
+          if gh release view v0.8.1 >/dev/null 2>&1; then
+            gh release upload v0.8.1 \
+              "$APK_PATH" \
+              release/SHA256.txt \
+              release/APK_BADGING.txt \
+              release/THIS_IS_THE_ONE.txt \
+              --clobber
+            gh release edit v0.8.1 --latest
+          else
+            gh release create v0.8.1 \
+              "$APK_PATH" \
+              release/SHA256.txt \
+              release/APK_BADGING.txt \
+              release/THIS_IS_THE_ONE.txt \
+              --title "SidePlay v0.8.1" \
+              --generate-notes \
+              --latest
+          fi
+
+          echo "✅ v0.8.1 is explicitly marked as GitHub Latest release"
           
