@@ -1,14 +1,19 @@
-name: SIDEPLAY 0.8.1 — MANUAL SHA-LOCKED BUILD
+name: SIDEPLAY 0.8.2 — FAST / STABLE / HEADLESS
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-sideplay-v0.8.2-AUTORUN.yml'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: BUILD EXACT v0.8.1 ONLY
+    name: BUILD EXACT v0.8.2 ARM64
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -16,41 +21,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Prove this is the SHA-locked workflow
+      - name: Require exact v0.8.1 base source
         shell: bash
         run: |
           set -euo pipefail
-          echo "WORKFLOW=$GITHUB_WORKFLOW"
-          echo "RUN=$GITHUB_RUN_NUMBER"
-          echo "COMMIT=$GITHUB_SHA"
-          test "$GITHUB_WORKFLOW" = "SIDEPLAY 0.8.1 — MANUAL SHA-LOCKED BUILD"
-
-      - name: Require the exact v0.8.1 source ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIP="SidePlay-Node-v0.8.1-STAY-INSIDE-BACKGROUND.zip"
-          EXPECTED="9d7f0b8f14a5f26f543862fda18d0296395174f7e9c4c1b3bfbac4c139c11242"
-
-          test -f "$ZIP" || { echo "ERROR: exact ZIP missing: $ZIP"; exit 1; }
+          ZIP='SidePlay-Node-v0.8.1-STAY-INSIDE-BACKGROUND.zip'
+          EXPECTED='9d7f0b8f14a5f26f543862fda18d0296395174f7e9c4c1b3bfbac4c139c11242'
+          test -f "$ZIP" || { echo "ERROR: $ZIP missing"; exit 1; }
           ACTUAL="$(sha256sum "$ZIP" | awk '{print $1}')"
-          echo "ZIP SHA256=$ACTUAL"
-          test "$ACTUAL" = "$EXPECTED" || {
-            echo "ERROR: wrong SidePlay ZIP. Expected $EXPECTED"
-            exit 1
-          }
-
+          echo "SOURCE ZIP SHA256=$ACTUAL"
+          test "$ACTUAL" = "$EXPECTED" || { echo 'ERROR: wrong v0.8.1 base ZIP'; exit 1; }
           rm -rf sideplay release signing
-          mkdir -p sideplay
+          mkdir sideplay
           unzip -q "$ZIP" -d sideplay
-
-          VERSION="$(node -p "require('./sideplay/package.json').version")"
-          echo "SOURCE VERSION=$VERSION"
-          test "$VERSION" = "0.8.1"
-
-          grep -q 'SidePlay/0.8.1 Android' sideplay/native/android/PlaybackService.java
+          test "$(node -p \"require('./sideplay/package.json').version\")" = '0.8.1'
           rm -rf sideplay/android
-          echo "✅ Exact v0.8.1 source verified by filename + SHA + package version + native marker"
+
+      - name: Patch source to v0.8.2 fast/stable
+        working-directory: sideplay
+        shell: bash
+        env:
+          PATCH_B64: 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBqc29uLCByZQoKIyAtLS0tLS0tLS0tLS0tLS0tIHZlcnNpb24gLS0tLS0tLS0tLS0tLS0tLQpwID0gUGF0aCgncGFja2FnZS5qc29uJykKcGtnID0ganNvbi5sb2FkcyhwLnJlYWRfdGV4dChlbmNvZGluZz0ndXRmLTgnKSkKcGtnWyd2ZXJzaW9uJ10gPSAnMC44LjInCnAud3JpdGVfdGV4dChqc29uLmR1bXBzKHBrZywgaW5kZW50PTIpICsgJ1xuJywgZW5jb2Rpbmc9J3V0Zi04JykKCiMgLS0tLS0tLS0tLS0tLS0tLSBBcHA6IGZhc3QgY2F0YWxvZyBzZWFyY2ggKyBoZWFkbGVzcyBwbGF5YmFjayAtLS0tLS0tLS0tLS0tLS0tCnAgPSBQYXRoKCdzcmMvQXBwLnRzeCcpCnMgPSBwLnJlYWRfdGV4dChlbmNvZGluZz0ndXRmLTgnKQoKIyBSZXBsYWNlIHRoZSBBbmRyb2lkIHl0LWRscC1maXJzdCBZb3VUdWJlIGNhdGFsb2cgc2VhcmNoIHdpdGggdGhlIGFscmVhZHktZXhpc3RpbmcKIyBsaWdodHdlaWdodCBrZXlsZXNzIEhUVFAgc2VhcmNoLiB5dC1kbHAgc2hvdWxkIG5vdCBib290IGp1c3QgdG8gcmVuZGVyIHJlc3VsdHMuCnBhdCA9IHJlLmNvbXBpbGUoCiAgICByIiAgICAgICAgaWYgXChzY29wZSA9PT0gJ2FsbCcgXHxcfCBzY29wZSA9PT0gJ3lvdXR1YmUnXCkgXHsuKj9cbiAgICAgICAgXH1cblxuICAgICAgICAvLyBPbiBBbmRyb2lkLCBcIkFsbFwiIGFsc28gc2VhcmNoZXMgU291bmRDbG91ZCB0aHJvdWdoIHl0LWRscCBpdHNlbGZcLiIsCiAgICByZS5TLAopCnJlcGxhY2VtZW50ID0gJycnICAgICAgICBpZiAoc2NvcGUgPT09ICdhbGwnIHx8IHNjb3BlID09PSAneW91dHViZScpIHsKICAgICAgICAgIC8vIHYwLjguMiBGQVNUIFBBVEg6IGNhdGFsb2cgc2VhcmNoIHN0YXlzIGxpZ2h0d2VpZ2h0LiBQeXRob24veXQtZGxwCiAgICAgICAgICAvLyBzdGFydHMgb25seSBhZnRlciB0aGUgdXNlciBhY3R1YWxseSB0YXBzIGEgcmVzdWx0LgogICAgICAgICAgam9icy5wdXNoKHNlYXJjaFlvdVR1YmUocSwgc3Auc3RhdGUueW91dHViZUFwaUtleSkKICAgICAgICAgICAgLnRoZW4oKGZvdW5kKSA9PiAoewogICAgICAgICAgICAgIG5hbWU6ICdZb3VUdWJlJywKICAgICAgICAgICAgICB0cmFja3M6IGZvdW5kLnNsaWNlKDAsIHNjb3BlID09PSAnYWxsJyA/IDE2IDogMzApLm1hcCgodHJhY2spID0+ICh7CiAgICAgICAgICAgICAgICAuLi50cmFjaywKICAgICAgICAgICAgICAgIHByb3ZpZGVyOiAneW91dHViZScgYXMgY29uc3QsCiAgICAgICAgICAgICAgICBzb3VyY2VVcmw6IGBodHRwczovL3d3dy55b3V0dWJlLmNvbS93YXRjaD92PSR7dHJhY2sudmlkZW9JZH1gLAogICAgICAgICAgICAgICAgLi4uKHNjb3BlID09PSAnYWxsJyA/IHsgbWVkaWFLaW5kOiAnYXVkaW8nIGFzIGNvbnN0LCBhdWRpb1ByZWZlcnJlZDogdHJ1ZSB9IDoge30pCiAgICAgICAgICAgICAgfSkpCiAgICAgICAgICAgIH0pKQogICAgICAgICAgICAuY2F0Y2goKGU6IGFueSkgPT4gKHsgbmFtZTogJ1lvdVR1YmUnLCB0cmFja3M6IFtdLCBlcnJvcjogZT8ubWVzc2FnZSB8fCAndW5hdmFpbGFibGUnIH0pKSkKICAgICAgICB9CgogICAgICAgIC8vIFNvdW5kQ2xvdWQncyBuYXRpdmUgeXQtZGxwIHNlYXJjaCBpcyBpbnRlbnRpb25hbGx5IGV4cGxpY2l0LXRhYiBvbmx5LicnJwpzMiwgbiA9IHBhdC5zdWJuKHJlcGxhY2VtZW50LCBzLCBjb3VudD0xKQppZiBuICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYnRkFTVCBTRUFSQ0ggcGF0Y2ggZmFpbGVkOiBleHBlY3RlZCAxIFlvdVR1YmUgc2VhcmNoIGJsb2NrLCBmb3VuZCB7bn0nKQpzID0gczIKCiMgTXVzaWMgaXMgdGhlIGZhc3QgZGVmYXVsdCBjYXRhbG9nLiBQcm92aWRlci1zcGVjaWZpYyBkaXNjb3ZlcnkgcmVtYWlucyBpbiBpdHMKIyBvd24gdGFicyBpbnN0ZWFkIG9mIGRlbGF5aW5nIGV2ZXJ5IGdlbmVyaWMgbXVzaWMgc2VhcmNoLgpzLCBuX2F1ZGl1cyA9IHJlLnN1Ym4oCiAgICByImlmIFwoc2NvcGUgPT09ICdhbGwnIFx8XHwgc2NvcGUgPT09ICdhdWRpdXMnXCkgam9ic1wucHVzaCIsCiAgICAiaWYgKHNjb3BlID09PSAnYXVkaXVzJykgam9icy5wdXNoIiwKICAgIHMsCiAgICBjb3VudD0xLAopCnMsIG5fcGVlciA9IHJlLnN1Ym4oCiAgICByImlmIFwoc2NvcGUgPT09ICdhbGwnIFx8XHwgc2NvcGUgPT09ICdwZWVydHViZSdcKSBqb2JzXC5wdXNoIiwKICAgICJpZiAoc2NvcGUgPT09ICdwZWVydHViZScpIGpvYnMucHVzaCIsCiAgICBzLAogICAgY291bnQ9MSwKKQppZiBuX2F1ZGl1cyAhPSAxIG9yIG5fcGVlciAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmJ0ZBU1QgU0VBUkNIIHByb3ZpZGVyLXNjb3BlIHBhdGNoIGZhaWxlZDogYXVkaXVzPXtuX2F1ZGl1c30sIHBlZXJ0dWJlPXtuX3BlZXJ9JykKCiMgSW4gTXVzaWMvQWxsLCBkb24ndCBibG9jayBpbml0aWFsIHJlc3VsdHMgb24gYSBzZWNvbmQgUHl0aG9uIHl0LWRscCBzZWFyY2guCnMsIG4gPSByZS5zdWJuKAogICAgciJpZiBcKFwoc2NvcGUgPT09ICdhbGwnIFx8XHwgc2NvcGUgPT09ICdzb3VuZGNsb3VkJ1wpICYmIGlzTmF0aXZlXChcKVwpIGpvYnNcLnB1c2hcKHNlYXJjaFdpdGhZdERscFwocSwgJ3NvdW5kY2xvdWQnLCBzY29wZSA9PT0gJ2FsbCcgXD8gOCA6IDI1XCkiLAogICAgImlmIChzY29wZSA9PT0gJ3NvdW5kY2xvdWQnICYmIGlzTmF0aXZlKCkpIGpvYnMucHVzaChzZWFyY2hXaXRoWXREbHAocSwgJ3NvdW5kY2xvdWQnLCAyNSkiLAogICAgcywKICAgIGNvdW50PTEsCikKaWYgbiAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmJ0ZBU1QgU0VBUkNIIHBhdGNoIGZhaWxlZDogU291bmRDbG91ZCBhbGwtc2NvcGUgdGFyZ2V0IGNvdW50PXtufScpCgojIE5vcm1hbCBQbGF5IG11c3QgbmV2ZXIgbGF1bmNoIE1lZGlhQ2FwdHVyZUFjdGl2aXR5LiBLZWVwIGV4cGxpY2l0L21hbnVhbCBjYXB0dXJlCiMgY29udHJvbHMgZWxzZXdoZXJlLCBidXQgYXV0by1jYXRjaGVyIGNhbGxzIGZyb20gcGxheSgpIGJlY29tZSBhbiBpbmxpbmUgZmFpbHVyZS4KcGxheV9zdGFydCA9IHMuZmluZCgnICBhc3luYyBmdW5jdGlvbiBwbGF5KCcpCnBsYXlfZW5kID0gcy5maW5kKCcgIGZ1bmN0aW9uIHByZXZpb3VzKCknLCBwbGF5X3N0YXJ0KQppZiBwbGF5X3N0YXJ0IDwgMCBvciBwbGF5X2VuZCA8IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdDb3VsZCBub3QgbG9jYXRlIEFwcC50c3ggcGxheSgpIGZ1bmN0aW9uJykKcGxheSA9IHNbcGxheV9zdGFydDpwbGF5X2VuZF0KY2F0Y2hlciA9ICJjYXB0dXJlVW5pdmVyc2FsVXJsKHRyYWNrLnNvdXJjZVVybCwgeyBhdXRvOiB0cnVlIH0pIgpjYXRjaGVyX2NvdW50ID0gcGxheS5jb3VudChjYXRjaGVyKQppZiBjYXRjaGVyX2NvdW50IDwgMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0hFQURMRVNTIFBMQVkgcGF0Y2ggZmFpbGVkOiBubyBhdXRvbWF0aWMgY2F0Y2hlciBjYWxsIGluIHBsYXkoKScpCnBsYXkgPSBwbGF5LnJlcGxhY2UoY2F0Y2hlciwgIlByb21pc2UucmVqZWN0KG5ldyBFcnJvcignU2lkZVBsYXkgY291bGQgbm90IHJlc29sdmUgYSBuYXRpdmUgc3RyZWFtIGZvciB0aGlzIHJlc3VsdC4nKSkiKQpzID0gc1s6cGxheV9zdGFydF0gKyBwbGF5ICsgc1twbGF5X2VuZDpdCgojIE1ha2UgdGhlIFVJIHByb21pc2UgbWF0Y2ggdGhlIGFyY2hpdGVjdHVyZS4KcyA9IHMucmVwbGFjZSgKICAgICdTZWFyY2ggc29uZ3MsIGFydGlzdHMsIHZpZGVvcywgb3IgcGFzdGUgYSBsaW5rLiBTaWRlUGxheSByZXNvbHZlcyBwbGF5YmFjayBhdXRvbWF0aWNhbGx5LicsCiAgICAnU2VhcmNoIGluc3RhbnRseS4gU2lkZVBsYXkgZXh0cmFjdHMgb25seSBhZnRlciB5b3UgdGFwIGEgcmVzdWx0LicKKQpwLndyaXRlX3RleHQocywgZW5jb2Rpbmc9J3V0Zi04JykKCiMgLS0tLS0tLS0tLS0tLS0tLSB5dC1kbHA6IGtlZXAgaGVhdnkgd29yayBvZmYgY3JpdGljYWwgcGF0aCAtLS0tLS0tLS0tLS0tLS0tCnAgPSBQYXRoKCduYXRpdmUvYW5kcm9pZC9ZdERscFBsdWdpbi5qYXZhJykKcyA9IHAucmVhZF90ZXh0KGVuY29kaW5nPSd1dGYtOCcpCgojIEFkZCBhIHNlcGFyYXRlbHktbGF6eSBGRm1wZWcgaW5pdC4gU2VhcmNoL3BsYXkgc3RyZWFtIGV4dHJhY3Rpb24gZG9lcyBub3QgbmVlZCBpdC4KbWFya2VyID0gJ3ByaXZhdGUgc3RhdGljIHZvbGF0aWxlIGJvb2xlYW4gaW5pdGlhbGl6ZWQgPSBmYWxzZTsnCmlmIG1hcmtlciBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1l0RGxwUGx1Z2luIGluaXRpYWxpemVkIG1hcmtlciBtaXNzaW5nJykKaWYgJ2ZmbXBlZ0luaXRpYWxpemVkJyBub3QgaW4gczoKICAgIHMgPSBzLnJlcGxhY2UoCiAgICAgICAgbWFya2VyLAogICAgICAgIG1hcmtlciArICdcbiAgICBwcml2YXRlIHN0YXRpYyBmaW5hbCBPYmplY3QgRkZNUEVHX0lOSVRfTE9DSyA9IG5ldyBPYmplY3QoKTtcbiAgICBwcml2YXRlIHN0YXRpYyB2b2xhdGlsZSBib29sZWFuIGZmbXBlZ0luaXRpYWxpemVkID0gZmFsc2U7JywKICAgICAgICAxLAogICAgKQoKIyBZb3V0dWJlREwgaW5pdCBvbmx5LiBEbyBub3QgaW5pdGlhbGl6ZSB+MzVNQiBGRm1wZWcgb3Igc3luY2hyb25vdXNseSB1cGRhdGUgeXQtZGxwCiMgYmVmb3JlIGEgc2ltcGxlIHBsYXliYWNrIHJlc29sdXRpb24uCmluaXRfcGF0ID0gcmUuY29tcGlsZSgKICAgIHIiXHMqWW91dHViZURMXC5nZXRJbnN0YW5jZVwoXClcLmluaXRcKGNvbnRleHRcKTtccypcblxzKkZGbXBlZ1wuZ2V0SW5zdGFuY2VcKFwpXC5pbml0XChjb250ZXh0XCk7XHMqXG5ccyppbml0aWFsaXplZCA9IHRydWU7XHMqXG5ccyptYXliZVVwZGF0ZUV4dHJhY3RvclwoY29udGV4dCwgZmFsc2VcKTsiLAogICAgcmUuTSwKKQppbml0X3JlcGwgPSAnJycKICAgICAgICAgICAgWW91dHViZURMLmdldEluc3RhbmNlKCkuaW5pdChjb250ZXh0KTsKICAgICAgICAgICAgaW5pdGlhbGl6ZWQgPSB0cnVlOycnJwpzLCBuID0gaW5pdF9wYXQuc3Vibihpbml0X3JlcGwsIHMsIGNvdW50PTEpCmlmIG4gIT0gMToKICAgICMgQWNjZXB0IGFuIGFscmVhZHktcGFydGlhbGx5LXBhdGNoZWQgdHJlZSwgYnV0IHN0aWxsIG1ha2Ugc3VyZSBGRm1wZWcgaXMgbm90IGluIGluaXQuCiAgICBlbnN1cmVfYmxvY2sgPSByZS5zZWFyY2gocidwdWJsaWMgc3RhdGljIHZvaWQgZW5zdXJlSW5pdGlhbGl6ZWRcKENvbnRleHQgY29udGV4dFwpLio/XG4gICAgXH0nLCBzLCByZS5TKQogICAgaWYgbm90IGVuc3VyZV9ibG9jayBvciAnRkZtcGVnLmdldEluc3RhbmNlKCkuaW5pdChjb250ZXh0KScgaW4gZW5zdXJlX2Jsb2NrLmdyb3VwKDApOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoZidZdERscFBsdWdpbiBoZWF2eSBpbml0IHBhdGNoIGZhaWxlZCwgY291bnQ9e259JykKCiMgT24gZXh0cmFjdGlvbiBmYWlsdXJlLCByZXR1cm4gcHJvbXB0bHkgYW5kIHNjaGVkdWxlIHRoZSB1cGRhdGVyIGluIHRoZSBiYWNrZ3JvdW5kLgojIFRoZSBvbGQgY29kZSB1cGRhdGVkIG92ZXIgdGhlIG5ldHdvcmsgYW5kIHJldHJpZWQgc3luY2hyb25vdXNseSwgbWFraW5nIGEgdGFwIGhhbmcuCnJldHJ5X3BhdCA9IHJlLmNvbXBpbGUoCiAgICByIiAgICAgICAgdHJ5IFx7XHMqXG4gICAgICAgICAgICByZXR1cm4gcmVzb2x2ZUludGVybmFsXChzb3VyY2UsIGF1ZGlvT25seVwpO1xzKlxuICAgICAgICBcfSBjYXRjaCBcKEV4Y2VwdGlvbiBmaXJzdFwpIFx7XHMqXG4gICAgICAgICAgICBtYXliZVVwZGF0ZUV4dHJhY3RvclwoY29udGV4dCwgdHJ1ZVwpO1xzKlxuICAgICAgICAgICAgcmV0dXJuIHJlc29sdmVJbnRlcm5hbFwoc291cmNlLCBhdWRpb09ubHlcKTtccypcbiAgICAgICAgXH0iLAogICAgcmUuTSwKKQpyZXRyeV9yZXBsID0gJycnICAgICAgICB0cnkgewogICAgICAgICAgICByZXR1cm4gcmVzb2x2ZUludGVybmFsKHNvdXJjZSwgYXVkaW9Pbmx5KTsKICAgICAgICB9IGNhdGNoIChFeGNlcHRpb24gZmlyc3QpIHsKICAgICAgICAgICAgQ29udGV4dCBhcHBDb250ZXh0ID0gY29udGV4dC5nZXRBcHBsaWNhdGlvbkNvbnRleHQoKTsKICAgICAgICAgICAgbmV3IFRocmVhZCgoKSAtPiBtYXliZVVwZGF0ZUV4dHJhY3RvcihhcHBDb250ZXh0LCB0cnVlKSwgIlNpZGVQbGF5WXREbHBVcGRhdGVyIikuc3RhcnQoKTsKICAgICAgICAgICAgdGhyb3cgZmlyc3Q7CiAgICAgICAgfScnJwpzLCBuID0gcmV0cnlfcGF0LnN1Ym4ocmV0cnlfcmVwbCwgcywgY291bnQ9MSkKaWYgbiAhPSAxIGFuZCAnU2lkZVBsYXlZdERscFVwZGF0ZXInIG5vdCBpbiBzOgogICAgcmFpc2UgU3lzdGVtRXhpdChmJ1l0RGxwUGx1Z2luIHN5bmMtdXBkYXRlIHJldHJ5IHBhdGNoIGZhaWxlZCwgY291bnQ9e259JykKCiMgTGF6eSBGRm1wZWcgaGVscGVyLgphbmNob3IgPSAnICAgIHB1YmxpYyBzdGF0aWMgSlNPYmplY3QgcmVzb2x2ZUZvclBsYXliYWNrKENvbnRleHQgY29udGV4dCwgU3RyaW5nIHNvdXJjZSkgdGhyb3dzIEV4Y2VwdGlvbiB7JwppZiAnZW5zdXJlRmZtcGVnSW5pdGlhbGl6ZWQnIG5vdCBpbiBzOgogICAgaGVscGVyID0gJycnICAgIHByaXZhdGUgc3RhdGljIHZvaWQgZW5zdXJlRmZtcGVnSW5pdGlhbGl6ZWQoQ29udGV4dCBjb250ZXh0KSB0aHJvd3MgRXhjZXB0aW9uIHsKICAgICAgICBpZiAoZmZtcGVnSW5pdGlhbGl6ZWQpIHJldHVybjsKICAgICAgICBzeW5jaHJvbml6ZWQgKEZGTVBFR19JTklUX0xPQ0spIHsKICAgICAgICAgICAgaWYgKGZmbXBlZ0luaXRpYWxpemVkKSByZXR1cm47CiAgICAgICAgICAgIEZGbXBlZy5nZXRJbnN0YW5jZSgpLmluaXQoY29udGV4dC5nZXRBcHBsaWNhdGlvbkNvbnRleHQoKSk7CiAgICAgICAgICAgIGZmbXBlZ0luaXRpYWxpemVkID0gdHJ1ZTsKICAgICAgICB9CiAgICB9CgonJycKICAgIGlmIGFuY2hvciBub3QgaW4gczoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdZdERscFBsdWdpbiByZXNvbHZlRm9yUGxheWJhY2sgYW5jaG9yIG1pc3NpbmcnKQogICAgcyA9IHMucmVwbGFjZShhbmNob3IsIGhlbHBlciArIGFuY2hvciwgMSkKCiMgT2ZmbGluZSBkb3dubG9hZC9tZXJnZSBpcyB0aGUgcGxhY2UgdGhhdCBhY3R1YWxseSBuZWVkcyBGRm1wZWcuCmRvd25sb2FkX2lkeCA9IHMuZmluZCgncHVibGljIHZvaWQgZG93bmxvYWQoUGx1Z2luQ2FsbCBjYWxsKScpCmlmIGRvd25sb2FkX2lkeCA8IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdZdERscFBsdWdpbiBkb3dubG9hZCgpIG1pc3NpbmcnKQpuZXh0X21ldGhvZCA9IHMuZmluZCgnXG4gICAgQFBsdWdpbk1ldGhvZCcsIGRvd25sb2FkX2lkeCArIDIwKQppZiBuZXh0X21ldGhvZCA8IDA6CiAgICBuZXh0X21ldGhvZCA9IGxlbihzKQpkb3dubG9hZF9ibG9jayA9IHNbZG93bmxvYWRfaWR4Om5leHRfbWV0aG9kXQppZiAnZW5zdXJlRmZtcGVnSW5pdGlhbGl6ZWQoZ2V0Q29udGV4dCgpKScgbm90IGluIGRvd25sb2FkX2Jsb2NrOgogICAgcG9zID0gZG93bmxvYWRfYmxvY2suZmluZCgnZW5zdXJlSW5pdGlhbGl6ZWQoKTsnKQogICAgaWYgcG9zIDwgMDoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdZdERscFBsdWdpbiBkb3dubG9hZCBlbnN1cmVJbml0aWFsaXplZCgpIG1pc3NpbmcnKQogICAgcG9zICs9IGxlbignZW5zdXJlSW5pdGlhbGl6ZWQoKTsnKQogICAgZG93bmxvYWRfYmxvY2sgPSBkb3dubG9hZF9ibG9ja1s6cG9zXSArICdcbiAgICAgICAgICAgICAgICBlbnN1cmVGZm1wZWdJbml0aWFsaXplZChnZXRDb250ZXh0KCkpOycgKyBkb3dubG9hZF9ibG9ja1twb3M6XQogICAgcyA9IHNbOmRvd25sb2FkX2lkeF0gKyBkb3dubG9hZF9ibG9jayArIHNbbmV4dF9tZXRob2Q6XQoKIyBCb3VuZCBzbG93IG5ldHdvcmtzIHNvIGV4dHJhY3Rpb24gZG9lc24ndCBzaXQgZm9yZXZlci4KYmFzZV9pZHggPSBzLmZpbmQoJ3ByaXZhdGUgc3RhdGljIFlvdXR1YmVETFJlcXVlc3QgYmFzZVJlcXVlc3QoU3RyaW5nIHNvdXJjZSknKQppZiBiYXNlX2lkeCA8IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdZdERscFBsdWdpbiBiYXNlUmVxdWVzdCBtaXNzaW5nJykKYmFzZV9lbmQgPSBzLmZpbmQoJ1xuICAgIH0nLCBiYXNlX2lkeCkKaWYgYmFzZV9lbmQgPCAwOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnWXREbHBQbHVnaW4gYmFzZVJlcXVlc3QgZW5kIG1pc3NpbmcnKQpiYXNlX2Jsb2NrID0gc1tiYXNlX2lkeDpiYXNlX2VuZF0KaWYgJy0tc29ja2V0LXRpbWVvdXQnIG5vdCBpbiBiYXNlX2Jsb2NrOgogICAgcmVxX2xpbmUgPSAnICAgICAgICBZb3V0dWJlRExSZXF1ZXN0IHJlcXVlc3QgPSBuZXcgWW91dHViZURMUmVxdWVzdChzb3VyY2UpOycKICAgIGlmIHJlcV9saW5lIG5vdCBpbiBiYXNlX2Jsb2NrOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1l0RGxwUGx1Z2luIGJhc2VSZXF1ZXN0IHJlcXVlc3QgbGluZSBtaXNzaW5nJykKICAgIGluamVjdGVkID0gcmVxX2xpbmUgKyAnJycKICAgICAgICByZXF1ZXN0LmFkZE9wdGlvbigiLS1zb2NrZXQtdGltZW91dCIsICI4Iik7CiAgICAgICAgcmVxdWVzdC5hZGRPcHRpb24oIi0tcmV0cmllcyIsICIxIik7CiAgICAgICAgcmVxdWVzdC5hZGRPcHRpb24oIi0tZXh0cmFjdG9yLXJldHJpZXMiLCAiMSIpOycnJwogICAgcyA9IHMucmVwbGFjZShyZXFfbGluZSwgaW5qZWN0ZWQsIDEpCgpwLndyaXRlX3RleHQocywgZW5jb2Rpbmc9J3V0Zi04JykKCiMgLS0tLS0tLS0tLS0tLS0tLSBwbGF5YmFjayBtYXJrZXIgLS0tLS0tLS0tLS0tLS0tLQpwID0gUGF0aCgnbmF0aXZlL2FuZHJvaWQvUGxheWJhY2tTZXJ2aWNlLmphdmEnKQpzID0gcC5yZWFkX3RleHQoZW5jb2Rpbmc9J3V0Zi04JykKaWYgJ1NpZGVQbGF5LzAuOC4xIEFuZHJvaWQnIG5vdCBpbiBzIGFuZCAnU2lkZVBsYXkvMC44LjIgQW5kcm9pZCcgbm90IGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdQbGF5YmFja1NlcnZpY2UgdmVyc2lvbiBtYXJrZXIgbWlzc2luZycpCnMgPSBzLnJlcGxhY2UoJ1NpZGVQbGF5LzAuOC4xIEFuZHJvaWQnLCAnU2lkZVBsYXkvMC44LjIgQW5kcm9pZCcpCnAud3JpdGVfdGV4dChzLCBlbmNvZGluZz0ndXRmLTgnKQoKUGF0aCgnQ0hBTkdFTE9HX1YwLjguMi5tZCcpLndyaXRlX3RleHQoJycnIyBTaWRlUGxheSB2MC44LjIg4oCUIEZhc3QgLyBTdGFibGVcblxuLSBZb3VUdWJlIGNhdGFsb2cgc2VhcmNoIHVzZXMgdGhlIGxpZ2h0d2VpZ2h0IGtleWxlc3Mgc2VhcmNoIHBhdGg7IGl0IG5vIGxvbmdlciBib290cyBQeXRob24veXQtZGxwLlxuLSBNdXNpYyBzZWFyY2ggbm8gbG9uZ2VyIHdhaXRzIGZvciBTb3VuZENsb3VkIHl0LWRscCBiZWZvcmUgcGFpbnRpbmcgcmVzdWx0cy5cbi0gSGVhdnkgZXh0cmFjdGlvbiBzdGFydHMgb25seSBhZnRlciBhIHJlc3VsdCBpcyB0YXBwZWQuXG4tIEZGbXBlZyBpcyBsYXp5LWxvYWRlZCBvbmx5IGZvciBvZmZsaW5lIGRvd25sb2FkL21lcmdlIHdvcmsuXG4tIHl0LWRscCB1cGRhdGVyIG5vIGxvbmdlciBibG9ja3MgYSBQbGF5IHRhcDsgZmFpbHVyZXMgc2NoZWR1bGUgYSBiYWNrZ3JvdW5kIHVwZGF0ZXIgYW5kIHJldHVybiBwcm9tcHRseS5cbi0geXQtZGxwIG5ldHdvcmsgcmV0cmllcy90aW1lb3V0cyBhcmUgYm91bmRlZC5cbi0gTm9ybWFsIEFuZHJvaWQgUGxheSBuZXZlciBsYXVuY2hlcyBNZWRpYUNhcHR1cmVBY3Rpdml0eSwgWW91VHViZSwgb3IgYSBicm93c2VyLlxuLSBFeGlzdGluZyBNZWRpYTMgYmFja2dyb3VuZCBzZXJ2aWNlIHJlbWFpbnMgdGhlIHBsYXliYWNrIG93bmVyIG9uY2UgYSBzdHJlYW0gcmVzb2x2ZXMuXG4tIEJ1aWxkIGlzIEFSTTY0LW9ubHkgdG8gZWxpbWluYXRlIHVudXNlZCB4ODYvMzItYml0IG5hdGl2ZSBwYXlsb2FkcyBvbiBtb2Rlcm4gU2Ftc3VuZy9BbmRyb2lkIGRldmljZXMuXG4nJycsIGVuY29kaW5nPSd1dGYtOCcpCgpwcmludCgndjAuOC4yIGZhc3Qvc3RhYmxlIHNvdXJjZSBwYXRjaCBjb21wbGV0ZScpCg=='
+        run: |
+          set -euo pipefail
+          printf '%s' "$PATCH_B64" | base64 --decode > /tmp/patch-sideplay-v082.py
+          python3 /tmp/patch-sideplay-v082.py
+          test "$(node -p \"require('./package.json').version\")" = '0.8.2'
+          grep -q 'SidePlay/0.8.2 Android' native/android/PlaybackService.java
+          grep -q 'FFMPEG_INIT_LOCK' native/android/YtDlpPlugin.java
+          grep -q 'SidePlayYtDlpUpdater' native/android/YtDlpPlugin.java
+          grep -q -- '--socket-timeout' native/android/YtDlpPlugin.java
+          ! grep -q "scope === 'all' || scope === 'soundcloud'" src/App.tsx
+          echo '✅ v0.8.2 fast/stable patch applied'
 
       - name: Set up Node 24
         uses: actions/setup-node@v7
@@ -77,7 +79,7 @@ jobs:
           npm install --no-audit --no-fund
           npm run build
 
-      - name: Generate a fresh Android project
+      - name: Generate fresh Android project and apply native patches
         working-directory: sideplay
         shell: bash
         run: |
@@ -86,11 +88,10 @@ jobs:
           npx cap add android
           npx cap sync android
           node scripts/patch-android.mjs
+          grep -q 'SidePlay/0.8.2 Android' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
+          grep -q 'FFMPEG_INIT_LOCK' android/app/src/main/java/app/sideplay/mobile/YtDlpPlugin.java
 
-          test -f android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'SidePlay/0.8.1 Android' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-
-      - name: Force Android version metadata to 0.8.1 / 801
+      - name: Force Android 0.8.2 / 802 and ARM64 only
         working-directory: sideplay
         shell: bash
         run: |
@@ -100,16 +101,22 @@ jobs:
           import re
           p = Path('android/app/build.gradle')
           s = p.read_text()
-          s, n1 = re.subn(r'(?m)^(\s*)versionCode\s+\d+\s*$', r'\1versionCode 801', s, count=1)
-          s, n2 = re.subn(r'(?m)^(\s*)versionName\s+["\'][^"\']+["\']\s*$', r'\1versionName "0.8.1"', s, count=1)
+          s, n1 = re.subn(r'(?m)^(\s*)versionCode\s+\d+\s*$', r'\1versionCode 802', s, count=1)
+          s, n2 = re.subn(r'(?m)^(\s*)versionName\s+["\'][^"\']+["\']\s*$', r'\1versionName "0.8.2"', s, count=1)
           if n1 != 1 or n2 != 1:
-              raise SystemExit(f'Could not set version metadata: code={n1}, name={n2}')
+              raise SystemExit(f'version metadata patch failed: code={n1}, name={n2}')
+          marker = 'defaultConfig {'
+          if marker not in s:
+              raise SystemExit('defaultConfig missing')
+          if 'abiFilters "arm64-v8a"' not in s:
+              s = s.replace(marker, marker + '\n        ndk { abiFilters "arm64-v8a" }', 1)
           p.write_text(s)
           PY
-          grep -n 'versionCode 801' android/app/build.gradle
-          grep -n 'versionName "0.8.1"' android/app/build.gradle
+          grep -n 'versionCode 802' android/app/build.gradle
+          grep -n 'versionName "0.8.2"' android/app/build.gradle
+          grep -n 'abiFilters "arm64-v8a"' android/app/build.gradle
 
-      - name: Build release APK
+      - name: Compile release APK
         working-directory: sideplay/android
         shell: bash
         run: |
@@ -117,16 +124,7 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:clean :app:assembleRelease --stacktrace --no-daemon
 
-      - name: Find unsigned APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK="$(find sideplay/android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*-release-unsigned.apk' | head -n1)"
-          test -f "$APK"
-          mkdir -p signing release
-          cp "$APK" signing/sideplay-081-unsigned.apk
-
-      - name: Prepare signing key
+      - name: Sign and hard-verify APK
         shell: bash
         env:
           SIDEPLAY_KEYSTORE_B64: ${{ secrets.SIDEPLAY_KEYSTORE_B64 }}
@@ -135,59 +133,31 @@ jobs:
           SIDEPLAY_KEY_PASSWORD: ${{ secrets.SIDEPLAY_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          mkdir -p signing release
+          APK="$(find sideplay/android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*-release-unsigned.apk' | head -n1)"
+          test -f "$APK"
+
           if [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]; then
-            echo "$SIDEPLAY_KEYSTORE_B64" | base64 --decode > signing/sideplay.jks
-            echo "KS_PASS=$SIDEPLAY_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "KEY_ALIAS=$SIDEPLAY_KEY_ALIAS" >> "$GITHUB_ENV"
-            echo "KEY_PASS=$SIDEPLAY_KEY_PASSWORD" >> "$GITHUB_ENV"
+            printf '%s' "$SIDEPLAY_KEYSTORE_B64" | base64 --decode > signing/sideplay.jks
+            KS="$SIDEPLAY_KEYSTORE_PASSWORD"; ALIAS="$SIDEPLAY_KEY_ALIAS"; KP="$SIDEPLAY_KEY_PASSWORD"
           else
-            keytool -genkeypair -v -keystore signing/sideplay.jks -storepass sideplay123 -keypass sideplay123 -alias sideplay -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SidePlay CI, OU=Testing, O=SidePlay, C=DO"
-            echo "KS_PASS=sideplay123" >> "$GITHUB_ENV"
-            echo "KEY_ALIAS=sideplay" >> "$GITHUB_ENV"
-            echo "KEY_PASS=sideplay123" >> "$GITHUB_ENV"
+            keytool -genkeypair -v -keystore signing/sideplay.jks -storepass sideplay123 -keypass sideplay123 -alias sideplay -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=SidePlay CI, O=SidePlay, C=DO'
+            KS=sideplay123; ALIAS=sideplay; KP=sideplay123
           fi
 
-      - name: Align and sign
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
-          APKSIGNER="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
-          OUT="release/SIDEPLAY_0.8.1_SHA_LOCKED_RUN_${GITHUB_RUN_NUMBER}.apk"
-          "$ZIPALIGN" -f -p 4 signing/sideplay-081-unsigned.apk signing/sideplay-081-aligned.apk
-          "$APKSIGNER" sign --ks signing/sideplay.jks --ks-key-alias "$KEY_ALIAS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --out "$OUT" signing/sideplay-081-aligned.apk
-          echo "APK_PATH=$OUT" >> "$GITHUB_ENV"
-
-      - name: HARD VERIFY final APK is really 0.8.1
-        shell: bash
-        run: |
-          set -euo pipefail
-          AAPT2="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt2"
-          APKSIGNER="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
-          ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
-
-          "$APKSIGNER" verify --verbose --print-certs "$APK_PATH"
-          "$ZIPALIGN" -c -v 4 "$APK_PATH"
-          "$AAPT2" dump badging "$APK_PATH" | tee release/APK_BADGING.txt
-
+          ZA="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
+          AS="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
+          AAPT="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt2"
+          "$ZA" -f -p 4 "$APK" signing/aligned.apk
+          OUT="release/SIDEPLAY_0.8.2_FAST_STABLE_ARM64_RUN_${GITHUB_RUN_NUMBER}.apk"
+          "$AS" sign --ks signing/sideplay.jks --ks-key-alias "$ALIAS" --ks-pass "pass:$KS" --key-pass "pass:$KP" --out "$OUT" signing/aligned.apk
+          "$AS" verify --verbose --print-certs "$OUT"
+          "$ZA" -c -v 4 "$OUT"
+          "$AAPT" dump badging "$OUT" | tee release/APK_BADGING.txt
           grep -q "package: name='app.sideplay.mobile'" release/APK_BADGING.txt
-          grep -q "versionCode='801'" release/APK_BADGING.txt
-          grep -q "versionName='0.8.1'" release/APK_BADGING.txt
+          grep -q "versionCode='802'" release/APK_BADGING.txt
+          grep -q "versionName='0.8.2'" release/APK_BADGING.txt
 
-          sha256sum "$APK_PATH" | tee release/SHA256.txt
-          printf 'SIDEPLAY 0.8.1\nRUN=%s\nCOMMIT=%s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > release/PROOF_081.txt
-
-          echo "✅ FINAL APK PROVEN: versionName=0.8.1 versionCode=801"
-
-      - name: Upload ONLY the SHA-locked v0.8.1 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ONLY_THIS_SIDEPLAY_0.8.1_SHA_LOCKED_RUN-${{ github.run_number }}
-          path: |
-            ${{ env.APK_PATH }}
-            release/APK_BADGING.txt
-            release/SHA256.txt
-            release/PROOF_081.txt
-          if-no-files-found: error
-          retention-days: 14
-          
+          unzip -l "$OUT" | tee release/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libpython' release/APK_CONTENTS.txt
+          ! grep -q 'lib/x86/' rele
