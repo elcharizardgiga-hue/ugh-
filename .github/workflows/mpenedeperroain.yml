@@ -1,0 +1,516 @@
+name: SidePlay R9 HF3 Cohesion Repair ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build SidePlay R9 HF3
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prove correct workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SIDEPLAY R9 HF3 COHESION REPAIR WORKFLOW V1"
+          echo "RUN=$GITHUB_RUN_NUMBER"
+          echo "SHA=$GITHUB_SHA"
+          echo "WORKSPACE=$GITHUB_WORKSPACE"
+
+      - name: Extract exact HF3 source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$GITHUB_WORKSPACE/SidePlay-Node-v0.8.4-R9-HOTFIX3-COHESION-REPAIR.zip"
+          DEST="$RUNNER_TEMP/sideplay-r9-hf3"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: HF3 ZIP is missing:"
+            echo "$ZIP"
+            echo
+            echo "Repo root:"
+            ls -la "$GITHUB_WORKSPACE"
+            exit 1
+          fi
+
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+
+          python3 - "$ZIP" "$DEST" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+
+          with zipfile.ZipFile(source, "r") as z:
+              broken = z.testzip()
+              if broken:
+                  raise SystemExit(f"Corrupt ZIP member: {broken}")
+              z.extractall(destination)
+
+          candidates = [
+              p for p in destination.rglob("package.json")
+              if p.is_file() and "node_modules" not in p.parts
+          ]
+
+          if not candidates:
+              raise SystemExit("No package.json found inside HF3 ZIP")
+
+          candidates.sort(key=lambda p: (len(p.parts), str(p)))
+          root = candidates[0].parent
+
+          env_file = Path(__import__("os").environ["GITHUB_ENV"])
+          with env_file.open("a", encoding="utf-8") as f:
+              f.write(f"SIDEPLAY_DIR={root}\n")
+
+          print("SIDEPLAY_DIR =", root)
+          print("package.json =", candidates[0])
+          PY
+
+      - name: Verify HF3 source and cohesion repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          package = json.loads(
+              Path("package.json").read_text(encoding="utf-8")
+          )
+
+          version = package.get("version")
+          typescript = (
+              package.get("devDependencies", {}).get("typescript")
+              or package.get("dependencies", {}).get("typescript")
+          )
+
+          print("Source version:", version)
+          print("TypeScript:", typescript)
+
+          if version != "0.8.4-r9":
+              raise SystemExit(
+                  f"Expected source version 0.8.4-r9, got {version!r}"
+              )
+
+          if typescript != "5.8.3":
+              raise SystemExit(
+                  f"Expected TypeScript 5.8.3, got {typescript!r}"
+              )
+          PY
+
+          test -f CHANGELOG_V0.8.4_R9_HOTFIX3_COHESION_REPAIR.md
+          test -f R9_HOTFIX3_RELEASE_CHECKS.txt
+          test -f tests/r9Hotfix3Cohesion.test.ts
+
+          test -f src/App.tsx
+          test -f src/styles.css
+          test -f src/lib/lyrics.ts
+          test -f src/lib/trackIdentity.ts
+          test -f src/lib/tasteEngine.ts
+          test -f src/lib/store.tsx
+          test -f scripts/patch-android.mjs
+
+          test -f native/android/PlaybackService.java
+          test -f native/android/BackgroundAudioPlugin.java
+          test -f native/android/NativeYouTubePlugin.java
+          test -f native/android/YtDlpPlugin.java
+          test -f native/android/YtDlpExtractorService.java
+          test -f native/android/YtDlpIsolatedClient.java
+          test -f native/android/NewPipeYouTubeResolver.java
+
+          # HF3: metadata integrity
+          grep -q 'mergeTrackMetadata' src/lib/trackIdentity.ts
+          grep -q 'isGenericTrackTitle' src/lib/trackIdentity.ts
+
+          # HF3: stale-search guards and suggestion lifecycle
+          grep -q 'searchRequestRef' src/App.tsx
+          grep -q 'suggestionRequestRef' src/App.tsx
+          grep -q 'suggestionsEnabled' src/App.tsx
+
+          # HF3: Taste snapshots / usable identity
+          grep -q 'identityIsUsable' src/lib/tasteEngine.ts
+          grep -q 'canonicalKey' src/lib/store.tsx
+
+          # HF3: scrollable Now Playing
+          grep -q 'overflow-y:auto' src/styles.css
+          grep -q 'lyrics-scroll' src/styles.css
+
+          # HF3: real lyrics path
+          grep -q 'lrclib.net/api' src/lib/lyrics.ts
+          grep -q 'parseLrc' src/lib/lyrics.ts
+          grep -q 'NativeYouTube.lyrics' src/lib/lyrics.ts
+          grep -q 'lyricsLrclib' native/android/NativeYouTubePlugin.java
+
+          # HF2 remains present
+          grep -q 'START_STICKY' native/android/PlaybackService.java
+          grep -q 'recoverSnapshot' native/android/PlaybackService.java
+          grep -q 'process-resurrection' native/android/PlaybackService.java
+          grep -q 'LOW_MEMORY' native/android/BackgroundAudioPlugin.java
+          grep -q 'innerTubeCooldownUntilMs' native/android/NativeYouTubePlugin.java
+
+          echo "HF3 source verification passed"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdkmanager \
+            --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+          echo "Android SDK ready"
+
+      - name: Install npm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          node --version
+          npm --version
+          npm install --no-audit --no-fund
+
+      - name: Run all SidePlay regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+          npm run test:core
+
+      - name: Build SidePlay web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+          npm run build
+
+      - name: Generate fresh Capacitor Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+          node scripts/patch-android.mjs
+
+      - name: Verify native patch survived generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          JAVA="android/app/src/main/java/app/sideplay/mobile"
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+
+          test -f "$JAVA/PlaybackService.java"
+          test -f "$JAVA/BackgroundAudioPlugin.java"
+          test -f "$JAVA/NativeYouTubePlugin.java"
+          test -f "$JAVA/YtDlpPlugin.java"
+          test -f "$JAVA/YtDlpExtractorService.java"
+          test -f "$JAVA/YtDlpIsolatedClient.java"
+
+          grep -q 'START_STICKY' "$JAVA/PlaybackService.java"
+          grep -q 'recoverSnapshot' "$JAVA/PlaybackService.java"
+          grep -q 'LOW_MEMORY' "$JAVA/BackgroundAudioPlugin.java"
+          grep -q 'innerTubeCooldownUntilMs' "$JAVA/NativeYouTubePlugin.java"
+          grep -q 'lyricsLrclib' "$JAVA/NativeYouTubePlugin.java"
+
+          grep -q 'android:process=":playback"' "$MANIFEST"
+          grep -q 'android:process=":extractor"' "$MANIFEST"
+
+          echo "Native Android patch verified"
+
+      - name: Force HF3 Android version and ARM64 only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("android/app/build.gradle")
+
+          if not p.exists():
+              raise SystemExit("android/app/build.gradle missing")
+
+          s = p.read_text(encoding="utf-8")
+
+          s, code_matches = re.subn(
+              r'(?m)^(\s*)versionCode\s+\d+\s*$',
+              r'\1versionCode 817',
+              s,
+              count=1,
+          )
+
+          s, name_matches = re.subn(
+              r'(?m)^(\s*)versionName\s+["\'][^"\']+["\']\s*$',
+              r'\1versionName "0.8.4-r9-hf3"',
+              s,
+              count=1,
+          )
+
+          if code_matches != 1 or name_matches != 1:
+              raise SystemExit(
+                  "Could not patch Android version: "
+                  f"versionCode={code_matches}, versionName={name_matches}"
+              )
+
+          # Fresh Capacitor project normally has no ABI filter.
+          # If one exists, make it ARM64-only; otherwise inject it.
+          if re.search(r'abiFilters\s+', s):
+              s = re.sub(
+                  r'abiFilters\s+[^\n]+',
+                  'abiFilters "arm64-v8a"',
+                  s,
+                  count=1,
+              )
+          else:
+              marker = "defaultConfig {"
+              if marker not in s:
+                  raise SystemExit("defaultConfig block missing")
+              s = s.replace(
+                  marker,
+                  marker + '\n        ndk { abiFilters "arm64-v8a" }',
+                  1,
+              )
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+          grep -q 'versionCode 817' android/app/build.gradle
+          grep -q 'versionName "0.8.4-r9-hf3"' android/app/build.gradle
+          grep -q 'abiFilters "arm64-v8a"' android/app/build.gradle
+
+          echo "Android identity:"
+          grep -n 'versionCode\|versionName\|abiFilters' android/app/build.gradle
+
+      - name: Compile release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR/android"
+
+          chmod +x gradlew
+
+          ./gradlew \
+            :app:clean \
+            :app:assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      - name: Locate unsigned APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path("android/app/build/outputs/apk/release")
+          candidates = sorted(root.glob("*-release-unsigned.apk"))
+
+          if not candidates:
+              raise SystemExit("Unsigned release APK not found")
+
+          apk = candidates[0].resolve()
+
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as f:
+              f.write(f"UNSIGNED_APK={apk}\n")
+
+          print("UNSIGNED_APK =", apk)
+          PY
+
+      - name: Sign and verify HF3 APK
+        shell: bash
+        env:
+          SIDEPLAY_KEYSTORE_B64: ${{ secrets.SIDEPLAY_KEYSTORE_B64 }}
+          SIDEPLAY_KEYSTORE_PASSWORD: ${{ secrets.SIDEPLAY_KEYSTORE_PASSWORD }}
+          SIDEPLAY_KEY_ALIAS: ${{ secrets.SIDEPLAY_KEY_ALIAS }}
+          SIDEPLAY_KEY_PASSWORD: ${{ secrets.SIDEPLAY_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          mkdir -p signing release
+
+          if \
+            [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && \
+            [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && \
+            [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && \
+            [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]
+          then
+            echo "Using persistent SidePlay signing key"
+
+            printf '%s' "$SIDEPLAY_KEYSTORE_B64" \
+              | base64 --decode \
+              > signing/sideplay.jks
+
+            KS="$SIDEPLAY_KEYSTORE_PASSWORD"
+            ALIAS="$SIDEPLAY_KEY_ALIAS"
+            KP="$SIDEPLAY_KEY_PASSWORD"
+          else
+            echo "WARNING: persistent signing secrets are not configured."
+            echo "Generating a temporary CI key."
+            echo "This build may require uninstalling an older SidePlay APK first."
+
+            keytool \
+              -genkeypair \
+              -keystore signing/sideplay.jks \
+              -storepass sideplay123 \
+              -keypass sideplay123 \
+              -alias sideplay \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SidePlay CI,O=SidePlay,C=DO"
+
+            KS="sideplay123"
+            ALIAS="sideplay"
+            KP="sideplay123"
+          fi
+
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          ZIPALIGN="$TOOLS/zipalign"
+          APKSIGNER="$TOOLS/apksigner"
+          AAPT="$TOOLS/aapt"
+
+          test -x "$ZIPALIGN"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+
+          "$ZIPALIGN" \
+            -f \
+            -p \
+            4 \
+            "$UNSIGNED_APK" \
+            signing/sideplay-hf3-aligned.apk
+
+          OUT="release/SidePlay-0.8.4-r9-HF3-Cohesion-Repair-arm64.apk"
+
+          "$APKSIGNER" sign \
+            --ks signing/sideplay.jks \
+            --ks-key-alias "$ALIAS" \
+            --ks-pass "pass:$KS" \
+            --key-pass "pass:$KP" \
+            --out "$OUT" \
+            signing/sideplay-hf3-aligned.apk
+
+          "$APKSIGNER" verify \
+            --verbose \
+            --print-certs \
+            "$OUT"
+
+          "$ZIPALIGN" -c -v 4 "$OUT"
+
+          "$AAPT" dump badging "$OUT" \
+            | tee release/APK_BADGING.txt
+
+          grep -q "package: name='app.sideplay.mobile'" release/APK_BADGING.txt
+          grep -q "versionCode='817'" release/APK_BADGING.txt
+          grep -q "versionName='0.8.4-r9-hf3'" release/APK_BADGING.txt
+
+          unzip -l "$OUT" \
+            | tee release/APK_CONTENTS.txt
+
+          # Prove the yt-dlp/Python payload survived the ARM64 shrink.
+          grep -q 'lib/arm64-v8a/libpython' release/APK_CONTENTS.txt
+
+          # Prove this really is ARM64-only.
+          if grep -q 'lib/armeabi-v7a/' release/APK_CONTENTS.txt; then
+            echo "ERROR: armeabi-v7a unexpectedly packaged"
+            exit 1
+          fi
+
+          if grep -q 'lib/x86/' release/APK_CONTENTS.txt; then
+            echo "ERROR: x86 unexpectedly packaged"
+            exit 1
+          fi
+
+          if grep -q 'lib/x86_64/' release/APK_CONTENTS.txt; then
+            echo "ERROR: x86_64 unexpectedly packaged"
+            exit 1
+          fi
+
+          sha256sum "$OUT" \
+            | tee release/SHA256.txt
+
+          cat > release/HF3_BUILD_PROOF.txt <<EOF
+          SidePlay R9 Hotfix3 - Cohesion Repair
+          package=app.sideplay.mobile
+          sourceVersion=0.8.4-r9
+          androidVersionName=0.8.4-r9-hf3
+          androidVersionCode=817
+          abi=arm64-v8a
+          githubRun=${GITHUB_RUN_NUMBER}
+          commit=${GITHUB_SHA}
+
+          HF3 focus:
+          - quality-aware metadata merging
+          - Untitled media containment
+          - stale-search generation guards
+          - autocomplete dismissal
+          - Taste identity snapshots and generic-bucket rejection
+          - scrollable Now Playing
+          - LRCLIB synced/plain lyrics
+          - native lyrics fallback
+          - HF2 Playback Resurrection retained
+          EOF
+
+          REAL_APK="$(realpath "$OUT")"
+          echo "APK_PATH=$REAL_APK" >> "$GITHUB_ENV"
+
+          echo
+          echo "SIDEPLAY HF3 APK READY"
+          echo "$REAL_APK"
+          cat release/SHA256.txt
+
+      - name: Upload HF3 APK and proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIDEPLAY-R9-HF3-COHESION-REPAIR-ARM64-${{ github.run_number }}
+          path: |
+            ${{ env.APK_PATH }}
+            ${{ env.SIDEPLAY_DIR }}/release/APK_BADGING.txt
+            ${{ env.SIDEPLAY_DIR }}/release/APK_CONTENTS.txt
+            ${{ env.SIDEPLAY_DIR }}/release/SHA256.txt
+            ${{ env.SIDEPLAY_DIR }}/release/HF3_BUILD_PROOF.txt
+          if-no-files-found: error
+          retention-days: 14
+          
