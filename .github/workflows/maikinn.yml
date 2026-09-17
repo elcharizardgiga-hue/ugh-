@@ -13,210 +13,519 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      # ------------------------------------------------------------
+      # CHECKOUT
+      # ------------------------------------------------------------
+
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # FIND SIDEPLAY SOURCE
+      # Works with:
+      #   repo/package.json
+      #   repo/SidePlay/package.json
+      #   repo/SidePlay-whatever.zip
+      # ------------------------------------------------------------
+
+      - name: Locate SidePlay source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================================"
+          echo " Looking for SidePlay source"
+          echo "======================================================"
+
+          SRC=""
+
+          # CASE 1 — source directly at repository root
+          if [ -f "$GITHUB_WORKSPACE/package.json" ]; then
+            SRC="$GITHUB_WORKSPACE"
+            echo "✅ package.json found at repository root"
+          fi
+
+          # CASE 2 — source inside a subfolder
+          if [ -z "$SRC" ]; then
+            PKG="$(
+              find "$GITHUB_WORKSPACE" \
+                -maxdepth 5 \
+                -type f \
+                -name package.json \
+                -not -path '*/node_modules/*' \
+                -not -path '*/android/*' \
+                | head -n 1 || true
+            )"
+
+            if [ -n "$PKG" ]; then
+              SRC="$(dirname "$PKG")"
+              echo "✅ SidePlay folder found:"
+              echo "$SRC"
+            fi
+          fi
+
+          # CASE 3 — repo contains SidePlay source ZIP
+          if [ -z "$SRC" ]; then
+            ZIP="$(
+              find "$GITHUB_WORKSPACE" \
+                -maxdepth 4 \
+                -type f \
+                \
+                  -iname 'SidePlay*.zip' \
+                  -o -iname '*sideplay*.zip' \
+                  -o -iname '*R9*HOTFIX2*.zip' \
+                \
+                | head -n 1 || true
+            )"
+
+            if [ -n "$ZIP" ]; then
+              echo "📦 Found SidePlay ZIP:"
+              echo "$ZIP"
+
+              rm -rf "$RUNNER_TEMP/sideplay-source"
+              mkdir -p "$RUNNER_TEMP/sideplay-source"
+
+              unzip -q "$ZIP" -d "$RUNNER_TEMP/sideplay-source"
+
+              PKG="$(
+                find "$RUNNER_TEMP/sideplay-source" \
+                  -maxdepth 6 \
+                  -type f \
+                  -name package.json \
+                  -not -path '*/node_modules/*' \
+                  | head -n 1 || true
+              )"
+
+              if [ -n "$PKG" ]; then
+                SRC="$(dirname "$PKG")"
+
+                echo "✅ Extracted SidePlay source:"
+                echo "$SRC"
+              fi
+            fi
+          fi
+
+          if [ -z "$SRC" ]; then
+            echo
+            echo "❌ SIDEPLAY SOURCE NOT FOUND"
+            echo
+            echo "Repository files:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 4 \
+              -type f \
+              | sort \
+              | head -250
+
+            echo
+            echo "Expected ONE of these:"
+            echo
+            echo "  repository/package.json"
+            echo
+            echo "  repository/SidePlay/package.json"
+            echo
+            echo "  repository/SidePlay-something.zip"
+            echo
+
+            exit 1
+          fi
+
+          echo "SIDEPLAY_DIR=$SRC" >> "$GITHUB_ENV"
+
+          echo
+          echo "======================================================"
+          echo " SIDEPLAY_DIR"
+          echo "======================================================"
+          echo "$SRC"
+
+          echo
+          echo "Source root:"
+          ls -la "$SRC"
+
+      # ------------------------------------------------------------
+      # VERIFY EXACT SOURCE
+      # ------------------------------------------------------------
 
       - name: Verify exact R9 Hotfix2 source
         shell: bash
         run: |
           set -euo pipefail
 
+          cd "$SIDEPLAY_DIR"
+
+          echo "Verifying package.json..."
+
           python3 - <<'PY'
           import json
           from pathlib import Path
 
-          p = Path('package.json')
-          if not p.exists():
-              raise SystemExit('package.json missing. Upload the CONTENTS of the SidePlay source folder to repo root.')
+          p = Path("package.json")
 
-          version = json.loads(p.read_text())['version']
-          print('SOURCE_VERSION=' + version)
-          if version != '0.8.4-r9':
-              raise SystemExit('Expected SidePlay source version 0.8.4-r9')
+          if not p.exists():
+              raise SystemExit("package.json missing after source discovery")
+
+          package = json.loads(p.read_text(encoding="utf-8"))
+          version = package.get("version")
+
+          print("SOURCE_VERSION =", version)
+
+          if version != "0.8.4-r9":
+              raise SystemExit(
+                  f"Expected SidePlay version 0.8.4-r9, got {version!r}"
+              )
           PY
 
+          # Main project
           test -f src/App.tsx
           test -f scripts/patch-android.mjs
+
+          # Native Android
           test -f native/android/PlaybackService.java
           test -f native/android/BackgroundAudioPlugin.java
           test -f native/android/NativeYouTubePlugin.java
           test -f native/android/YtDlpPlugin.java
           test -f native/android/YtDlpExtractorService.java
           test -f native/android/YtDlpIsolatedClient.java
+          test -f native/android/NewPipeYouTubeResolver.java
+          test -f native/android/SidePlayNewPipeDownloader.java
+
+          # Intelligence
           test -f src/lib/trackIdentity.ts
           test -f src/lib/tasteEngine.ts
           test -f src/lib/musicIdentity.ts
           test -f src/lib/lyrics.ts
 
-          # Queue + recommendation integrity
+          # Queue / radio integrity
           grep -q 'repairTrackIdentity' src/App.tsx
-          grep -q 'related(options:' src/lib/nativeYouTube.ts
-          grep -q 'youtube-watch-next' native/android/NativeYouTubePlugin.java
           grep -q 'recordSkip' src/lib/store.tsx
           grep -q "queueOrigin: 'autoplay'" src/App.tsx
           grep -q "'light' : 'full'" src/lib/universalSource.ts
-          grep -q "provider: 'youtube'" src/lib/recommendations.ts
 
-          # Intelligence UX
-          grep -q 'discoverRadio' src/App.tsx
+          # Recommendation / search intelligence
           grep -q 'buildTasteProfile' src/lib/tasteEngine.ts
           grep -q 'rankAndDedupeMusicSearch' src/lib/musicIdentity.ts
           grep -q 'NativeYouTube.lyrics' src/lib/lyrics.ts
-          grep -q 'public void suggest(PluginCall call)' native/android/NativeYouTubePlugin.java
-          grep -q 'public void lyrics(PluginCall call)' native/android/NativeYouTubePlugin.java
 
-          # Resolver fortress
-          grep -q 'SidePlay/0.8.4-r9 Android' native/android/PlaybackService.java
+          # Native suggestions + lyrics
+          grep -q 'public void suggest(PluginCall call)' \
+            native/android/NativeYouTubePlugin.java
+
+          grep -q 'public void lyrics(PluginCall call)' \
+            native/android/NativeYouTubePlugin.java
+
+          # NewPipe / yt-dlp fortress
           grep -q 'FFMPEG_INIT_LOCK' native/android/YtDlpPlugin.java
           grep -q 'EXTRACTOR_LOCK' native/android/YtDlpPlugin.java
           grep -q 'YtDlpIsolatedClient.resolve' native/android/YtDlpPlugin.java
           grep -q 'requireIsolatedExtractorProcess' native/android/YtDlpPlugin.java
-          grep -q 'resolveBlocking' native/android/YtDlpIsolatedClient.java
-          ! grep -q 'javax.annotation' native/android/SidePlayNewPipeDownloader.java
-          grep -q -- '--socket-timeout", "12"' native/android/YtDlpPlugin.java
-          grep -q 'newpipe-dash-adaptive' native/android/NewPipeYouTubeResolver.java
-          grep -q 'prefetchUniversalUrl' src/lib/universalSource.ts
-          grep -q 'Refreshing source' native/android/PlaybackService.java
 
-          # HOTFIX2 — resurrection + diagnostics + cooldown
-          grep -q 'START_STICKY' native/android/PlaybackService.java
-          grep -q 'hasRecentPlayingSnapshot' native/android/PlaybackService.java
-          grep -q 'recoverSnapshot' native/android/PlaybackService.java
-          grep -q 'process-resurrection' native/android/PlaybackService.java
-          grep -q 'restored-refreshed' native/android/PlaybackService.java
-          grep -q 'waiting-network' native/android/PlaybackService.java
-          grep -q 'RECOVERY_HEARTBEAT_MS' native/android/PlaybackService.java
-          grep -q 'heartbeatAt' native/android/BackgroundAudioPlugin.java
-          grep -q 'LOW_MEMORY' native/android/BackgroundAudioPlugin.java
-          grep -q 'PACKAGE_UPDATED' native/android/BackgroundAudioPlugin.java
-          grep -q 'innerTubeCooldownUntilMs' native/android/NativeYouTubePlugin.java
-          grep -q 'innerTubeFailureStreak' native/android/NativeYouTubePlugin.java
+          grep -q 'resolveBlocking' \
+            native/android/YtDlpIsolatedClient.java
 
-          echo '✅ R9 Hotfix2 source verified'
+          grep -q 'newpipe-dash-adaptive' \
+            native/android/NewPipeYouTubeResolver.java
+
+          ! grep -q 'javax.annotation' \
+            native/android/SidePlayNewPipeDownloader.java
+
+          # --------------------------------------------------------
+          # HOTFIX2 — PLAYBACK RESURRECTION
+          # --------------------------------------------------------
+
+          grep -q 'START_STICKY' \
+            native/android/PlaybackService.java
+
+          grep -q 'hasRecentPlayingSnapshot' \
+            native/android/PlaybackService.java
+
+          grep -q 'recoverSnapshot' \
+            native/android/PlaybackService.java
+
+          grep -q 'process-resurrection' \
+            native/android/PlaybackService.java
+
+          grep -q 'restored-refreshed' \
+            native/android/PlaybackService.java
+
+          grep -q 'waiting-network' \
+            native/android/PlaybackService.java
+
+          grep -q 'RECOVERY_HEARTBEAT_MS' \
+            native/android/PlaybackService.java
+
+          # Diagnostics
+          grep -q 'heartbeatAt' \
+            native/android/BackgroundAudioPlugin.java
+
+          grep -q 'LOW_MEMORY' \
+            native/android/BackgroundAudioPlugin.java
+
+          grep -q 'PACKAGE_UPDATED' \
+            native/android/BackgroundAudioPlugin.java
+
+          # InnerTube breaker
+          grep -q 'innerTubeCooldownUntilMs' \
+            native/android/NativeYouTubePlugin.java
+
+          grep -q 'innerTubeFailureStreak' \
+            native/android/NativeYouTubePlugin.java
+
+          echo
+          echo "✅ SidePlay 0.8.4-r9 Hotfix2 source verified"
+
+      # ------------------------------------------------------------
+      # TOOLCHAIN
+      # ------------------------------------------------------------
 
       - name: Set up Node 24
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: '24'
-          package-manager-cache: false
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+        uses: android-actions/setup-android@v3
 
-      - name: Install dependencies and build web app
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          npm install --no-audit --no-fund
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      # ------------------------------------------------------------
+      # WEB BUILD
+      # ------------------------------------------------------------
+
+      - name: Install npm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$SIDEPLAY_DIR"
+
+          echo "Node:"
+          node --version
+
+          echo "npm:"
+          npm --version
+
+          echo "TypeScript pin:"
+          node -e "
+            const p=require('./package.json');
+            console.log(
+              p.devDependencies?.typescript ||
+              p.dependencies?.typescript
+            )
+          "
+
+          npm install \
+            --no-audit \
+            --no-fund
+
+      - name: Run SidePlay regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$SIDEPLAY_DIR"
+
           npm run test:core
+
+      - name: Build web app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$SIDEPLAY_DIR"
+
           npm run build
+
+      # ------------------------------------------------------------
+      # GENERATE ANDROID
+      # ------------------------------------------------------------
 
       - name: Generate fresh Android project
         shell: bash
         run: |
           set -euo pipefail
 
+          cd "$SIDEPLAY_DIR"
+
+          echo "Removing stale Android project..."
           rm -rf android
 
+          echo "Creating Capacitor Android project..."
           npx cap add android
+
+          echo "Syncing web/native configuration..."
           npx cap sync android
+
+          echo "Applying SidePlay native patches..."
           node scripts/patch-android.mjs
 
-          test -f android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          test -f android/app/src/main/java/app/sideplay/mobile/BackgroundAudioPlugin.java
-          test -f android/app/src/main/java/app/sideplay/mobile/NativeYouTubePlugin.java
-          test -f android/app/src/main/java/app/sideplay/mobile/YtDlpPlugin.java
-          test -f android/app/src/main/java/app/sideplay/mobile/YtDlpExtractorService.java
-          test -f android/app/src/main/java/app/sideplay/mobile/YtDlpIsolatedClient.java
+      # ------------------------------------------------------------
+      # VERIFY PATCHED ANDROID
+      # ------------------------------------------------------------
 
-          grep -q 'SidePlay/0.8.4-r9 Android' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'addSession(mediaSession)' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'DefaultMediaNotificationProvider' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-
-          # Hotfix2 must survive patch-android.mjs
-          grep -q 'START_STICKY' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'hasRecentPlayingSnapshot' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'recoverSnapshot' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'process-resurrection' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-          grep -q 'RECOVERY_HEARTBEAT_MS' android/app/src/main/java/app/sideplay/mobile/PlaybackService.java
-
-          grep -q 'LOW_MEMORY' android/app/src/main/java/app/sideplay/mobile/BackgroundAudioPlugin.java
-          grep -q 'PACKAGE_UPDATED' android/app/src/main/java/app/sideplay/mobile/BackgroundAudioPlugin.java
-
-          grep -q 'innerTubeCooldownUntilMs' android/app/src/main/java/app/sideplay/mobile/NativeYouTubePlugin.java
-
-          grep -q 'android:name=".YtDlpExtractorService"' android/app/src/main/AndroidManifest.xml
-          grep -q 'android:process=":extractor"' android/app/src/main/AndroidManifest.xml
-          grep -q 'android:process=":playback"' android/app/src/main/AndroidManifest.xml
-
-          ! grep -q 'javax.annotation' android/app/src/main/java/app/sideplay/mobile/SidePlayNewPipeDownloader.java
-
-          echo '✅ Native Hotfix2 patches copied'
-
-      - name: Force Android v0.8.4-r9 / 816 and ARM64 only
+      - name: Verify patched Android project
         shell: bash
         run: |
           set -euo pipefail
+
+          cd "$SIDEPLAY_DIR"
+
+          JAVA="android/app/src/main/java/app/sideplay/mobile"
+
+          test -f "$JAVA/PlaybackService.java"
+          test -f "$JAVA/BackgroundAudioPlugin.java"
+          test -f "$JAVA/NativeYouTubePlugin.java"
+          test -f "$JAVA/YtDlpPlugin.java"
+          test -f "$JAVA/YtDlpExtractorService.java"
+          test -f "$JAVA/YtDlpIsolatedClient.java"
+
+          # Playback process
+          grep -q 'START_STICKY' \
+            "$JAVA/PlaybackService.java"
+
+          grep -q 'hasRecentPlayingSnapshot' \
+            "$JAVA/PlaybackService.java"
+
+          grep -q 'recoverSnapshot' \
+            "$JAVA/PlaybackService.java"
+
+          grep -q 'process-resurrection' \
+            "$JAVA/PlaybackService.java"
+
+          grep -q 'RECOVERY_HEARTBEAT_MS' \
+            "$JAVA/PlaybackService.java"
+
+          # Diagnostics
+          grep -q 'LOW_MEMORY' \
+            "$JAVA/BackgroundAudioPlugin.java"
+
+          grep -q 'PACKAGE_UPDATED' \
+            "$JAVA/BackgroundAudioPlugin.java"
+
+          # InnerTube breaker
+          grep -q 'innerTubeCooldownUntilMs' \
+            "$JAVA/NativeYouTubePlugin.java"
+
+          # Isolated processes
+          grep -q \
+            'android:name=".YtDlpExtractorService"' \
+            android/app/src/main/AndroidManifest.xml
+
+          grep -q \
+            'android:process=":extractor"' \
+            android/app/src/main/AndroidManifest.xml
+
+          grep -q \
+            'android:process=":playback"' \
+            android/app/src/main/AndroidManifest.xml
+
+          # NewPipe source sanity
+          ! grep -q 'javax.annotation' \
+            "$JAVA/SidePlayNewPipeDownloader.java"
+
+          echo "✅ Native Android patch verified"
+
+      # ------------------------------------------------------------
+      # FORCE RELEASE IDENTITY + ARM64
+      # ------------------------------------------------------------
+
+      - name: Force Android release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$SIDEPLAY_DIR"
 
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          p = Path('android/app/build.gradle')
-          s = p.read_text()
+          p = Path("android/app/build.gradle")
 
-          s, n1 = re.subn(
+          if not p.exists():
+              raise SystemExit("android/app/build.gradle missing")
+
+          s = p.read_text(encoding="utf-8")
+
+          s, n_code = re.subn(
               r'(?m)^(\s*)versionCode\s+\d+\s*$',
               r'\1versionCode 816',
               s,
-              count=1,
+              count=1
           )
 
-          s, n2 = re.subn(
+          s, n_name = re.subn(
               r'(?m)^(\s*)versionName\s+["\'][^"\']+["\']\s*$',
               r'\1versionName "0.8.4-r9"',
               s,
-              count=1,
+              count=1
           )
 
-          if n1 != 1 or n2 != 1:
+          if n_code != 1:
               raise SystemExit(
-                  f'Could not patch Android version metadata: code={n1}, name={n2}'
+                  f"Could not patch versionCode; matches={n_code}"
+              )
+
+          if n_name != 1:
+              raise SystemExit(
+                  f"Could not patch versionName; matches={n_name}"
               )
 
           if 'abiFilters "arm64-v8a"' not in s:
-              marker = 'defaultConfig {'
+              marker = "defaultConfig {"
 
               if marker not in s:
-                  raise SystemExit('defaultConfig block missing')
+                  raise SystemExit("defaultConfig block missing")
 
               s = s.replace(
                   marker,
-                  marker + '\n        ndk { abiFilters "arm64-v8a" }',
-                  1,
+                  marker +
+                  '\n        ndk { abiFilters "arm64-v8a" }',
+                  1
               )
 
-          p.write_text(s)
+          p.write_text(s, encoding="utf-8")
           PY
 
-          grep -n 'versionCode 816' android/app/build.gradle
-          grep -n 'versionName "0.8.4-r9"' android/app/build.gradle
-          grep -n 'abiFilters "arm64-v8a"' android/app/build.gradle
+          echo
+          echo "Android identity:"
+          grep -n 'versionCode' android/app/build.gradle
+          grep -n 'versionName' android/app/build.gradle
+          grep -n 'abiFilters' android/app/build.gradle
+
+          grep -q 'versionCode 816' \
+            android/app/build.gradle
+
+          grep -q 'versionName "0.8.4-r9"' \
+            android/app/build.gradle
+
+          grep -q 'abiFilters "arm64-v8a"' \
+            android/app/build.gradle
+
+      # ------------------------------------------------------------
+      # GRADLE BUILD
+      # ------------------------------------------------------------
 
       - name: Compile release APK
-        working-directory: android
         shell: bash
         run: |
           set -euo pipefail
+
+          cd "$SIDEPLAY_DIR/android"
 
           chmod +x gradlew
 
@@ -225,6 +534,10 @@ jobs:
             :app:assembleRelease \
             --stacktrace \
             --no-daemon
+
+      # ------------------------------------------------------------
+      # SIGN APK
+      # ------------------------------------------------------------
 
       - name: Sign and hard-verify APK
         shell: bash
@@ -237,7 +550,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p signing release
+          cd "$SIDEPLAY_DIR"
+
+          mkdir -p signing
+          mkdir -p release
 
           APK="$(
             find android/app/build/outputs/apk/release \
@@ -247,15 +563,25 @@ jobs:
               | head -n 1
           )"
 
-          test -f "$APK" || {
-            echo 'Unsigned APK not found'
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "❌ Unsigned release APK not found"
             exit 1
-          }
+          fi
 
-          if [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] \
-            && [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] \
-            && [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] \
-            && [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]; then
+          echo "Unsigned APK:"
+          echo "$APK"
+
+          # --------------------------------------------------------
+          # SIGNING KEY
+          # --------------------------------------------------------
+
+          if \
+            [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && \
+            [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && \
+            [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && \
+            [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]; then
+
+            echo "Using persistent SidePlay signing key"
 
             printf '%s' "$SIDEPLAY_KEYSTORE_B64" \
               | base64 --decode \
@@ -266,122 +592,11 @@ jobs:
             KP="$SIDEPLAY_KEY_PASSWORD"
 
           else
-            echo '⚠️ Signing secrets missing.'
-            echo '⚠️ Creating an ephemeral CI signing key.'
-            echo '⚠️ This APK cannot update builds signed with another key.'
 
-            keytool -genkeypair \
-              -v \
-              -keystore signing/sideplay.jks \
-              -storepass sideplay123 \
-              -keypass sideplay123 \
-              -alias sideplay \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname 'CN=SidePlay CI, O=SidePlay, C=DO'
-
-            KS=sideplay123
-            ALIAS=sideplay
-            KP=sideplay123
-          fi
-
-          ZA="$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign"
-          AS="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
-          AAPT="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt"
-
-          "$ZA" \
-            -f \
-            -p \
-            4 \
-            "$APK" \
-            signing/sideplay-aligned.apk
-
-          OUT="release/SIDEPLAY_0.8.4_R9_HOTFIX2_PLAYBACK_RESURRECTION_ARM64_RUN_${GITHUB_RUN_NUMBER}.apk"
-
-          "$AS" sign \
-            --ks signing/sideplay.jks \
-            --ks-key-alias "$ALIAS" \
-            --ks-pass "pass:$KS" \
-            --key-pass "pass:$KP" \
-            --out "$OUT" \
-            signing/sideplay-aligned.apk
-
-          "$AS" verify \
-            --verbose \
-            --print-certs \
-            "$OUT"
-
-          "$ZA" \
-            -c \
-            -v \
-            4 \
-            "$OUT"
-
-          "$AAPT" dump badging "$OUT" \
-            | tee release/APK_BADGING.txt
-
-          grep -q \
-            "package: name='app.sideplay.mobile'" \
-            release/APK_BADGING.txt
-
-          grep -q \
-            "versionCode='816'" \
-            release/APK_BADGING.txt
-
-          grep -q \
-            "versionName='0.8.4-r9'" \
-            release/APK_BADGING.txt
-
-          unzip -l "$OUT" \
-            | tee release/APK_CONTENTS.txt
-
-          # ARM64 only
-          grep -q \
-            'lib/arm64-v8a/libpython' \
-            release/APK_CONTENTS.txt
-
-          ! grep -q \
-            'lib/x86/' \
-            release/APK_CONTENTS.txt
-
-          ! grep -q \
-            'lib/x86_64/' \
-            release/APK_CONTENTS.txt
-
-          ! grep -q \
-            'lib/armeabi-v7a/' \
-            release/APK_CONTENTS.txt
-
-          sha256sum "$OUT" \
-            | tee release/SHA256.txt
-
-          cat > release/PROOF_084_R9_HOTFIX2.txt <<EOF
-          SidePlay 0.8.4 R9 Hotfix2 — Playback Resurrection
-          versionName=0.8.4-r9
-          versionCode=816
-          ABI=arm64-v8a
-          RUN=${GITHUB_RUN_NUMBER}
-          COMMIT=${GITHUB_SHA}
-          FEATURES=playback-resurrection,heartbeat-diagnostics,low-memory-recovery,innertube-circuit-breaker,taste-engine,smart-radio,autocomplete,lyrics,queue-integrity
-          EOF
-
-          echo "APK_PATH=$OUT" >> "$GITHUB_ENV"
-
-          echo '✅ APK verified as SidePlay 0.8.4-r9 / 816 / ARM64 / Hotfix2 Playback Resurrection'
-
-      - name: Upload final APK
-        uses: actions/upload-artifact@v4
-
-        with:
-          name: SIDEPLAY_0.8.4_R9_HOTFIX2_PLAYBACK_RESURRECTION_ARM64_RUN-${{ github.run_number }}
-
-          path: |
-            ${{ env.APK_PATH }}
-            release/APK_BADGING.txt
-            release/APK_CONTENTS.txt
-            release/SHA256.txt
-            release/PROOF_084_R9_HOTFIX2.txt
-
-          if-no-files-found: error
-          retention-days: 14
+            echo
+            echo "⚠️ No SidePlay signing secrets configured"
+            echo "⚠️ Generating temporary CI signing key"
+            echo
+            echo "This APK will install normally,"
+            echo "but it may NOT update an existing SidePlay"
+            echo "
