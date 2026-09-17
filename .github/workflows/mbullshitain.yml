@@ -1,0 +1,456 @@
+name: SidePlay 0.9.0 R10 Stabilization ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build SidePlay R10
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prove correct workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SIDEPLAY 0.9.0 R10 STABILIZATION WORKFLOW V1"
+          echo "RUN=$GITHUB_RUN_NUMBER"
+          echo "SHA=$GITHUB_SHA"
+          echo "WORKSPACE=$GITHUB_WORKSPACE"
+
+      - name: Extract exact R10 source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$GITHUB_WORKSPACE/SidePlay-Node-v0.9.0-R10-STABILIZATION.zip"
+          DEST="$RUNNER_TEMP/sideplay-r10"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: R10 source ZIP not found:"
+            echo "$ZIP"
+            echo
+            echo "Repository root:"
+            ls -la "$GITHUB_WORKSPACE"
+            exit 1
+          fi
+
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+
+          python3 - "$ZIP" "$DEST" <<'PY'
+          import os
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          src = Path(sys.argv[1])
+          dst = Path(sys.argv[2])
+
+          with zipfile.ZipFile(src, "r") as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"Corrupt ZIP member: {bad}")
+              z.extractall(dst)
+
+          packages = [
+              p for p in dst.rglob("package.json")
+              if p.is_file() and "node_modules" not in p.parts
+          ]
+          if not packages:
+              raise SystemExit("No package.json found inside R10 ZIP")
+
+          packages.sort(key=lambda p: (len(p.parts), str(p)))
+          project = packages[0].parent
+
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
+              env.write(f"SIDEPLAY_DIR={project}\n")
+
+          print("SIDEPLAY_DIR =", project)
+          print("package.json =", packages[0])
+          PY
+
+      - name: Verify exact R10 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+
+          if package.get("version") != "0.9.0-r10":
+              raise SystemExit(
+                  f"Expected 0.9.0-r10, got {package.get('version')!r}"
+              )
+
+          ts = package.get("devDependencies", {}).get("typescript")
+          if ts != "5.8.3":
+              raise SystemExit(f"Expected TypeScript 5.8.3, got {ts!r}")
+
+          print("Source version =", package["version"])
+          print("TypeScript =", ts)
+          PY
+
+          test -f CHANGELOG_V0.9.0_R10_STABILIZATION.md
+          test -f CHANGELOG_V0.9.0_R10_TUNE_V2.md
+          test -f R10_PLAN.md
+          test -f R10_RELEASE_CHECKS.txt
+
+          test -f src/lib/playbackMachine.ts
+          test -f src/lib/rollingCache.ts
+          test -f src/lib/radioTuning.ts
+          test -f src/lib/tasteEngine.ts
+          test -f src/lib/trackIdentity.ts
+
+          test -f native/android/PlaybackService.java
+          test -f native/android/BackgroundAudioPlugin.java
+          test -f native/android/NativeYouTubePlugin.java
+          test -f native/android/YtDlpPlugin.java
+          test -f native/android/RollingCachePlugin.java
+          test -f native/android/OfflineMediaPlugin.java
+
+          grep -q 'replaceAutoplayQueue' src/lib/store.tsx
+          grep -q 'playbackMachine' src/App.tsx
+          grep -q 'lookupRollingCopy' src/App.tsx
+          grep -q 'promoteRollingOfflineCopy' src/App.tsx
+
+          grep -q 'RADIO_TUNING_PRESETS' src/lib/radioTuning.ts
+          grep -q 'radioTuneBias' src/lib/radioTuning.ts
+          grep -q 'Apply to Up Next' src/App.tsx
+          grep -q 'sp.replaceAutoplayQueue(autoplay)' src/App.tsx
+          grep -q 'radioBuildRequestRef' src/App.tsx
+          grep -q 'radioTuneApplyRef' src/App.tsx
+
+          grep -q 'promoteRolling' native/android/OfflineMediaPlugin.java
+          grep -q -- '--concurrent-fragments' native/android/YtDlpPlugin.java
+          grep -q -- '--http-chunk-size' native/android/YtDlpPlugin.java
+
+          grep -q 'START_STICKY' native/android/PlaybackService.java
+          grep -q 'recoverSnapshot' native/android/PlaybackService.java
+          grep -q 'LOW_MEMORY' native/android/BackgroundAudioPlugin.java
+          grep -q 'lrclib.net/api' src/lib/lyrics.ts
+          grep -q 'mergeTrackMetadata' src/lib/trackIdentity.ts
+
+          echo "R10 source verification passed"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdkmanager \
+            --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          node --version
+          npm --version
+          npm install --no-audit --no-fund
+
+      - name: Run regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+          npm run test:core
+
+      - name: Build web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+          npm run build
+
+      - name: Generate fresh Capacitor Android shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+          node scripts/patch-android.mjs
+
+      - name: Force ARM64 and verify generated R10 Android shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("android/app/build.gradle")
+          s = p.read_text(encoding="utf-8")
+
+          if not re.search(r'versionCode\s+818\b', s):
+              raise SystemExit("versionCode 818 missing after native patch")
+          if not re.search(r'versionName\s+["\']0\.9\.0-r10["\']', s):
+              raise SystemExit("versionName 0.9.0-r10 missing after native patch")
+
+          if re.search(r'abiFilters\s+', s):
+              s = re.sub(
+                  r'abiFilters\s+[^\n]+',
+                  'abiFilters "arm64-v8a"',
+                  s,
+                  count=1,
+              )
+          else:
+              marker = "defaultConfig {"
+              if marker not in s:
+                  raise SystemExit("defaultConfig block missing")
+              s = s.replace(
+                  marker,
+                  marker + '\n        ndk { abiFilters "arm64-v8a" }',
+                  1,
+              )
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+          JAVA="android/app/src/main/java/app/sideplay/mobile"
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+
+          test -f "$JAVA/PlaybackService.java"
+          test -f "$JAVA/BackgroundAudioPlugin.java"
+          test -f "$JAVA/NativeYouTubePlugin.java"
+          test -f "$JAVA/YtDlpPlugin.java"
+          test -f "$JAVA/RollingCachePlugin.java"
+          test -f "$JAVA/OfflineMediaPlugin.java"
+
+          grep -q 'START_STICKY' "$JAVA/PlaybackService.java"
+          grep -q 'recoverSnapshot' "$JAVA/PlaybackService.java"
+          grep -q 'android:process=":playback"' "$MANIFEST"
+          grep -q 'android:process=":extractor"' "$MANIFEST"
+
+          grep -q 'versionCode 818' android/app/build.gradle
+          grep -q 'versionName "0.9.0-r10"' android/app/build.gradle
+          grep -q 'abiFilters "arm64-v8a"' android/app/build.gradle
+
+          echo "Generated Android shell verified"
+
+      - name: Compile release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR/android"
+
+          chmod +x gradlew
+          ./gradlew \
+            :app:clean \
+            :app:assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      - name: Locate unsigned APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path("android/app/build/outputs/apk/release")
+          candidates = sorted(root.glob("*-release-unsigned.apk"))
+          if not candidates:
+              raise SystemExit("Unsigned release APK not found")
+
+          apk = candidates[0].resolve()
+
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as f:
+              f.write(f"UNSIGNED_APK={apk}\n")
+
+          print("UNSIGNED_APK =", apk)
+          PY
+
+      - name: Sign and verify R10 APK
+        shell: bash
+        env:
+          SIDEPLAY_KEYSTORE_B64: ${{ secrets.SIDEPLAY_KEYSTORE_B64 }}
+          SIDEPLAY_KEYSTORE_PASSWORD: ${{ secrets.SIDEPLAY_KEYSTORE_PASSWORD }}
+          SIDEPLAY_KEY_ALIAS: ${{ secrets.SIDEPLAY_KEY_ALIAS }}
+          SIDEPLAY_KEY_PASSWORD: ${{ secrets.SIDEPLAY_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd "$SIDEPLAY_DIR"
+
+          mkdir -p signing release
+
+          if \
+            [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && \
+            [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && \
+            [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && \
+            [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]
+          then
+            echo "Using persistent SidePlay signing key"
+
+            printf '%s' "$SIDEPLAY_KEYSTORE_B64" \
+              | base64 --decode \
+              > signing/sideplay.jks
+
+            KS="$SIDEPLAY_KEYSTORE_PASSWORD"
+            ALIAS="$SIDEPLAY_KEY_ALIAS"
+            KP="$SIDEPLAY_KEY_PASSWORD"
+          else
+            echo "WARNING: persistent signing secrets are not configured."
+            echo "Generating temporary CI signing key."
+
+            keytool \
+              -genkeypair \
+              -keystore signing/sideplay.jks \
+              -storepass sideplay123 \
+              -keypass sideplay123 \
+              -alias sideplay \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SidePlay CI,O=SidePlay,C=DO"
+
+            KS="sideplay123"
+            ALIAS="sideplay"
+            KP="sideplay123"
+          fi
+
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          ZIPALIGN="$TOOLS/zipalign"
+          APKSIGNER="$TOOLS/apksigner"
+          AAPT="$TOOLS/aapt"
+
+          test -x "$ZIPALIGN"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+
+          "$ZIPALIGN" \
+            -f \
+            -p \
+            4 \
+            "$UNSIGNED_APK" \
+            signing/sideplay-r10-aligned.apk
+
+          OUT="release/SidePlay-0.9.0-r10-STABILIZATION-arm64.apk"
+
+          "$APKSIGNER" sign \
+            --ks signing/sideplay.jks \
+            --ks-key-alias "$ALIAS" \
+            --ks-pass "pass:$KS" \
+            --key-pass "pass:$KP" \
+            --out "$OUT" \
+            signing/sideplay-r10-aligned.apk
+
+          "$APKSIGNER" verify \
+            --verbose \
+            --print-certs \
+            "$OUT"
+
+          "$ZIPALIGN" -c -v 4 "$OUT"
+
+          "$AAPT" dump badging "$OUT" \
+            | tee release/APK_BADGING.txt
+
+          grep -q "package: name='app.sideplay.mobile'" release/APK_BADGING.txt
+          grep -q "versionCode='818'" release/APK_BADGING.txt
+          grep -q "versionName='0.9.0-r10'" release/APK_BADGING.txt
+
+          unzip -l "$OUT" \
+            | tee release/APK_CONTENTS.txt
+
+          grep -q 'lib/arm64-v8a/libpython' release/APK_CONTENTS.txt
+
+          if grep -q 'lib/armeabi-v7a/' release/APK_CONTENTS.txt; then
+            echo "ERROR: armeabi-v7a unexpectedly packaged"
+            exit 1
+          fi
+          if grep -q 'lib/x86/' release/APK_CONTENTS.txt; then
+            echo "ERROR: x86 unexpectedly packaged"
+            exit 1
+          fi
+          if grep -q 'lib/x86_64/' release/APK_CONTENTS.txt; then
+            echo "ERROR: x86_64 unexpectedly packaged"
+            exit 1
+          fi
+
+          sha256sum "$OUT" | tee release/SHA256.txt
+
+          cat > release/R10_BUILD_PROOF.txt <<EOF
+          SidePlay 0.9.0-r10 Stabilization
+          package=app.sideplay.mobile
+          versionName=0.9.0-r10
+          versionCode=818
+          abi=arm64-v8a
+          githubRun=${GITHUB_RUN_NUMBER}
+          commit=${GITHUB_SHA}
+
+          Core:
+          - Track identity / metadata repair
+          - Playback state machine
+          - Queue v2
+          - Resolver health router
+          - Taste diagnostics
+          - HF2 playback resurrection
+          - HF3 cohesion/search/lyrics repairs
+
+          R10:
+          - Previous 20 + current + next 20 persistent rolling cache
+          - Local-first cached playback
+          - Download Accelerator
+          - Tune V2 live autoplay replacement
+          - Tune generation guards
+          - ARM64-only verified runtime
+          EOF
+
+          REAL_APK="$(realpath "$OUT")"
+          echo "APK_PATH=$REAL_APK" >> "$GITHUB_ENV"
+
+          echo "R10 APK ready:"
+          echo "$REAL_APK"
+          cat release/SHA256.txt
+
+      - name: Upload R10 APK and proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIDEPLAY-0.9.0-R10-STABILIZATION-ARM64-${{ github.run_number }}
+          path: |
+            ${{ env.APK_PATH }}
+            ${{ env.SIDEPLAY_DIR }}/release/APK_BADGING.txt
+            ${{ env.SIDEPLAY_DIR }}/release/APK_CONTENTS.txt
+            ${{ env.SIDEPLAY_DIR }}/release/SHA256.txt
+            ${{ env.SIDEPLAY_DIR }}/release/R10_BUILD_PROOF.txt
+          if-no-files-found: error
+          retention-days: 14
+          
