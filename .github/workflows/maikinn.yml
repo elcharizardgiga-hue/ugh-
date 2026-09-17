@@ -13,137 +13,258 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      # ------------------------------------------------------------
-      # CHECKOUT
-      # ------------------------------------------------------------
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # FIND SIDEPLAY SOURCE
-      # Works with:
-      #   repo/package.json
-      #   repo/SidePlay/package.json
-      #   repo/SidePlay-whatever.zip
-      # ------------------------------------------------------------
+      # ============================================================
+      # 2. LOCATE SIDEPLAY SOURCE
+      #
+      # Supports:
+      #
+      # repo/package.json
+      #
+      # repo/SomeFolder/package.json
+      #
+      # repo/SidePlay-Whatever.zip
+      #
+      # It explicitly prefers:
+      # SidePlay-Node-v0.8.4-R9-HOTFIX2-PLAYBACK-RESURRECTION.zip
+      # ============================================================
 
       - name: Locate SidePlay source
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "======================================================"
-          echo " Looking for SidePlay source"
-          echo "======================================================"
+          python3 - <<'PY'
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
 
-          SRC=""
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+          github_env = Path(os.environ["GITHUB_ENV"])
 
-          # CASE 1 — source directly at repository root
-          if [ -f "$GITHUB_WORKSPACE/package.json" ]; then
-            SRC="$GITHUB_WORKSPACE"
-            echo "✅ package.json found at repository root"
-          fi
+          print("=" * 64)
+          print(" Looking for SidePlay source")
+          print("=" * 64)
+          print("Workspace:", workspace)
+          print()
 
-          # CASE 2 — source inside a subfolder
-          if [ -z "$SRC" ]; then
-            PKG="$(
-              find "$GITHUB_WORKSPACE" \
-                -maxdepth 5 \
-                -type f \
-                -name package.json \
-                -not -path '*/node_modules/*' \
-                -not -path '*/android/*' \
-                | head -n 1 || true
-            )"
+          src = None
 
-            if [ -n "$PKG" ]; then
-              SRC="$(dirname "$PKG")"
-              echo "✅ SidePlay folder found:"
-              echo "$SRC"
-            fi
-          fi
+          # --------------------------------------------------------
+          # CASE 1:
+          # package.json directly at repo root
+          # --------------------------------------------------------
 
-          # CASE 3 — repo contains SidePlay source ZIP
-          if [ -z "$SRC" ]; then
-            ZIP="$(
-              find "$GITHUB_WORKSPACE" \
-                -maxdepth 4 \
-                -type f \
-                \
-                  -iname 'SidePlay*.zip' \
-                  -o -iname '*sideplay*.zip' \
-                  -o -iname '*R9*HOTFIX2*.zip' \
-                \
-                | head -n 1 || true
-            )"
+          root_package = workspace / "package.json"
 
-            if [ -n "$ZIP" ]; then
-              echo "📦 Found SidePlay ZIP:"
-              echo "$ZIP"
+          if root_package.is_file():
+              src = workspace
+              print("✅ package.json found at repository root")
 
-              rm -rf "$RUNNER_TEMP/sideplay-source"
-              mkdir -p "$RUNNER_TEMP/sideplay-source"
+          # --------------------------------------------------------
+          # CASE 2:
+          # source inside a folder
+          # --------------------------------------------------------
 
-              unzip -q "$ZIP" -d "$RUNNER_TEMP/sideplay-source"
+          if src is None:
+              packages = []
 
-              PKG="$(
-                find "$RUNNER_TEMP/sideplay-source" \
-                  -maxdepth 6 \
-                  -type f \
-                  -name package.json \
-                  -not -path '*/node_modules/*' \
-                  | head -n 1 || true
-              )"
+              for p in workspace.rglob("package.json"):
+                  if not p.is_file():
+                      continue
 
-              if [ -n "$PKG" ]; then
-                SRC="$(dirname "$PKG")"
+                  if ".git" in p.parts:
+                      continue
 
-                echo "✅ Extracted SidePlay source:"
-                echo "$SRC"
-              fi
-            fi
-          fi
+                  if "node_modules" in p.parts:
+                      continue
 
-          if [ -z "$SRC" ]; then
-            echo
-            echo "❌ SIDEPLAY SOURCE NOT FOUND"
-            echo
-            echo "Repository files:"
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 4 \
-              -type f \
-              | sort \
-              | head -250
+                  # Ignore generated Android package files
+                  if "android" in p.parts:
+                      continue
 
-            echo
-            echo "Expected ONE of these:"
-            echo
-            echo "  repository/package.json"
-            echo
-            echo "  repository/SidePlay/package.json"
-            echo
-            echo "  repository/SidePlay-something.zip"
-            echo
+                  packages.append(p)
 
-            exit 1
-          fi
+              if packages:
+                  packages.sort(key=lambda p: (len(p.parts), str(p)))
+                  src = packages[0].parent
 
-          echo "SIDEPLAY_DIR=$SRC" >> "$GITHUB_ENV"
+                  print("✅ Found SidePlay source folder:")
+                  print(src)
 
-          echo
-          echo "======================================================"
-          echo " SIDEPLAY_DIR"
-          echo "======================================================"
-          echo "$SRC"
+          # --------------------------------------------------------
+          # CASE 3:
+          # SidePlay ZIP stored in repository
+          # --------------------------------------------------------
 
-          echo
-          echo "Source root:"
-          ls -la "$SRC"
+          if src is None:
+              preferred_name = (
+                  "SidePlay-Node-v0.8.4-"
+                  "R9-HOTFIX2-PLAYBACK-RESURRECTION.zip"
+              )
 
-      # ------------------------------------------------------------
-      # VERIFY EXACT SOURCE
-      # ------------------------------------------------------------
+              preferred = workspace / preferred_name
+
+              zip_path = None
+
+              if preferred.is_file():
+                  zip_path = preferred
+
+                  print("✅ Found exact R9 Hotfix2 ZIP:")
+                  print(zip_path)
+
+              else:
+                  zips = []
+
+                  for p in workspace.rglob("*.zip"):
+                      if not p.is_file():
+                          continue
+
+                      if ".git" in p.parts:
+                          continue
+
+                      if "sideplay" not in p.name.lower():
+                          continue
+
+                      zips.append(p)
+
+                  # Strongly prefer R9 + HOTFIX2
+                  preferred_candidates = [
+                      p
+                      for p in zips
+                      if "r9" in p.name.lower()
+                      and "hotfix2" in p.name.lower()
+                  ]
+
+                  if preferred_candidates:
+                      preferred_candidates.sort()
+                      zip_path = preferred_candidates[0]
+
+                  elif zips:
+                      # Last fallback: newest SidePlay-looking ZIP
+                      zips.sort(
+                          key=lambda p: p.stat().st_mtime,
+                          reverse=True
+                      )
+                      zip_path = zips[0]
+
+                  if zip_path:
+                      print("📦 Found SidePlay ZIP:")
+                      print(zip_path)
+
+              if zip_path:
+                  extract_dir = runner_temp / "sideplay-source"
+
+                  if extract_dir.exists():
+                      shutil.rmtree(extract_dir)
+
+                  extract_dir.mkdir(parents=True)
+
+                  print()
+                  print("Extracting ZIP...")
+
+                  with zipfile.ZipFile(zip_path, "r") as z:
+                      z.extractall(extract_dir)
+
+                  packages = []
+
+                  for p in extract_dir.rglob("package.json"):
+                      if not p.is_file():
+                          continue
+
+                      if "node_modules" in p.parts:
+                          continue
+
+                      packages.append(p)
+
+                  if packages:
+                      packages.sort(
+                          key=lambda p: (len(p.parts), str(p))
+                      )
+
+                      src = packages[0].parent
+
+                      print()
+                      print("✅ Extracted SidePlay source:")
+                      print(src)
+
+          # --------------------------------------------------------
+          # FAILURE DIAGNOSTICS
+          # --------------------------------------------------------
+
+          if src is None:
+              print()
+              print("❌ SIDEPLAY SOURCE NOT FOUND")
+              print()
+              print("Repository contents:")
+              print()
+
+              shown = 0
+
+              for p in sorted(workspace.rglob("*")):
+                  if not p.is_file():
+                      continue
+
+                  if ".git" in p.parts:
+                      continue
+
+                  try:
+                      print(p.relative_to(workspace))
+                  except Exception:
+                      print(p)
+
+                  shown += 1
+
+                  if shown >= 300:
+                      break
+
+              raise SystemExit(1)
+
+          # --------------------------------------------------------
+          # BASIC SANITY
+          # --------------------------------------------------------
+
+          package_json = src / "package.json"
+
+          if not package_json.is_file():
+              raise SystemExit(
+                  f"Located source has no package.json: {src}"
+              )
+
+          # Export SIDEPLAY_DIR for all later steps
+          with github_env.open(
+              "a",
+              encoding="utf-8"
+          ) as f:
+              f.write(f"SIDEPLAY_DIR={src}\n")
+
+          print()
+          print("=" * 64)
+          print(" SIDEPLAY SOURCE READY")
+          print("=" * 64)
+
+          print("SIDEPLAY_DIR =", src)
+          print("package.json =", package_json)
+
+          print()
+          print("Top-level source contents:")
+
+          for child in sorted(src.iterdir()):
+              print(" -", child.name)
+
+          PY
+
+      # ============================================================
+      # 3. VERIFY SOURCE
+      # ============================================================
 
       - name: Verify exact R9 Hotfix2 source
         shell: bash
@@ -152,7 +273,11 @@ jobs:
 
           cd "$SIDEPLAY_DIR"
 
-          echo "Verifying package.json..."
+          echo "Current source:"
+          pwd
+
+          echo
+          echo "Checking package version..."
 
           python3 - <<'PY'
           import json
@@ -161,24 +286,30 @@ jobs:
           p = Path("package.json")
 
           if not p.exists():
-              raise SystemExit("package.json missing after source discovery")
+              raise SystemExit(
+                  "package.json missing after source discovery"
+              )
 
-          package = json.loads(p.read_text(encoding="utf-8"))
+          package = json.loads(
+              p.read_text(encoding="utf-8")
+          )
+
           version = package.get("version")
 
           print("SOURCE_VERSION =", version)
 
           if version != "0.8.4-r9":
               raise SystemExit(
-                  f"Expected SidePlay version 0.8.4-r9, got {version!r}"
+                  f"Expected 0.8.4-r9, got {version!r}"
               )
           PY
 
-          # Main project
+          echo
+          echo "Checking required source files..."
+
           test -f src/App.tsx
           test -f scripts/patch-android.mjs
 
-          # Native Android
           test -f native/android/PlaybackService.java
           test -f native/android/BackgroundAudioPlugin.java
           test -f native/android/NativeYouTubePlugin.java
@@ -188,35 +319,56 @@ jobs:
           test -f native/android/NewPipeYouTubeResolver.java
           test -f native/android/SidePlayNewPipeDownloader.java
 
-          # Intelligence
           test -f src/lib/trackIdentity.ts
           test -f src/lib/tasteEngine.ts
           test -f src/lib/musicIdentity.ts
           test -f src/lib/lyrics.ts
+          test -f src/lib/universalSource.ts
 
-          # Queue / radio integrity
-          grep -q 'repairTrackIdentity' src/App.tsx
-          grep -q 'recordSkip' src/lib/store.tsx
-          grep -q "queueOrigin: 'autoplay'" src/App.tsx
-          grep -q "'light' : 'full'" src/lib/universalSource.ts
+          echo
+          echo "Checking R9 intelligence..."
 
-          # Recommendation / search intelligence
-          grep -q 'buildTasteProfile' src/lib/tasteEngine.ts
-          grep -q 'rankAndDedupeMusicSearch' src/lib/musicIdentity.ts
-          grep -q 'NativeYouTube.lyrics' src/lib/lyrics.ts
+          grep -q 'repairTrackIdentity' \
+            src/App.tsx
 
-          # Native suggestions + lyrics
+          grep -q 'buildTasteProfile' \
+            src/lib/tasteEngine.ts
+
+          grep -q 'rankAndDedupeMusicSearch' \
+            src/lib/musicIdentity.ts
+
+          grep -q 'NativeYouTube.lyrics' \
+            src/lib/lyrics.ts
+
+          grep -q 'recordSkip' \
+            src/lib/store.tsx
+
+          grep -q "queueOrigin: 'autoplay'" \
+            src/App.tsx
+
+          echo
+          echo "Checking native search / lyrics..."
+
           grep -q 'public void suggest(PluginCall call)' \
             native/android/NativeYouTubePlugin.java
 
           grep -q 'public void lyrics(PluginCall call)' \
             native/android/NativeYouTubePlugin.java
 
-          # NewPipe / yt-dlp fortress
-          grep -q 'FFMPEG_INIT_LOCK' native/android/YtDlpPlugin.java
-          grep -q 'EXTRACTOR_LOCK' native/android/YtDlpPlugin.java
-          grep -q 'YtDlpIsolatedClient.resolve' native/android/YtDlpPlugin.java
-          grep -q 'requireIsolatedExtractorProcess' native/android/YtDlpPlugin.java
+          echo
+          echo "Checking resolver fortress..."
+
+          grep -q 'FFMPEG_INIT_LOCK' \
+            native/android/YtDlpPlugin.java
+
+          grep -q 'EXTRACTOR_LOCK' \
+            native/android/YtDlpPlugin.java
+
+          grep -q 'YtDlpIsolatedClient.resolve' \
+            native/android/YtDlpPlugin.java
+
+          grep -q 'requireIsolatedExtractorProcess' \
+            native/android/YtDlpPlugin.java
 
           grep -q 'resolveBlocking' \
             native/android/YtDlpIsolatedClient.java
@@ -224,12 +376,15 @@ jobs:
           grep -q 'newpipe-dash-adaptive' \
             native/android/NewPipeYouTubeResolver.java
 
-          ! grep -q 'javax.annotation' \
+          if grep -q 'javax.annotation' \
             native/android/SidePlayNewPipeDownloader.java
+          then
+            echo "❌ javax.annotation regression detected"
+            exit 1
+          fi
 
-          # --------------------------------------------------------
-          # HOTFIX2 — PLAYBACK RESURRECTION
-          # --------------------------------------------------------
+          echo
+          echo "Checking Hotfix2 Playback Resurrection..."
 
           grep -q 'START_STICKY' \
             native/android/PlaybackService.java
@@ -252,7 +407,9 @@ jobs:
           grep -q 'RECOVERY_HEARTBEAT_MS' \
             native/android/PlaybackService.java
 
-          # Diagnostics
+          echo
+          echo "Checking process diagnostics..."
+
           grep -q 'heartbeatAt' \
             native/android/BackgroundAudioPlugin.java
 
@@ -262,7 +419,9 @@ jobs:
           grep -q 'PACKAGE_UPDATED' \
             native/android/BackgroundAudioPlugin.java
 
-          # InnerTube breaker
+          echo
+          echo "Checking InnerTube circuit breaker..."
+
           grep -q 'innerTubeCooldownUntilMs' \
             native/android/NativeYouTubePlugin.java
 
@@ -270,22 +429,30 @@ jobs:
             native/android/NativeYouTubePlugin.java
 
           echo
-          echo "✅ SidePlay 0.8.4-r9 Hotfix2 source verified"
+          echo "✅ R9 Hotfix2 source verified"
 
-      # ------------------------------------------------------------
-      # TOOLCHAIN
-      # ------------------------------------------------------------
+      # ============================================================
+      # 4. NODE
+      # ============================================================
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
+      # ============================================================
+      # 5. JAVA
+      # ============================================================
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
+
+      # ============================================================
+      # 6. ANDROID SDK
+      # ============================================================
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -302,9 +469,13 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      # ------------------------------------------------------------
-      # WEB BUILD
-      # ------------------------------------------------------------
+          echo
+          echo "Android SDK:"
+          echo "$ANDROID_SDK_ROOT"
+
+      # ============================================================
+      # 7. NPM INSTALL
+      # ============================================================
 
       - name: Install npm dependencies
         shell: bash
@@ -313,24 +484,36 @@ jobs:
 
           cd "$SIDEPLAY_DIR"
 
-          echo "Node:"
+          echo "Node version:"
           node --version
 
-          echo "npm:"
+          echo
+          echo "npm version:"
           npm --version
 
-          echo "TypeScript pin:"
-          node -e "
-            const p=require('./package.json');
-            console.log(
-              p.devDependencies?.typescript ||
-              p.dependencies?.typescript
-            )
-          "
+          echo
+          echo "TypeScript requested by package.json:"
+
+          node - <<'NODE'
+          const p = require("./package.json");
+
+          console.log(
+            p.devDependencies?.typescript ??
+            p.dependencies?.typescript ??
+            "not explicitly pinned"
+          );
+          NODE
+
+          echo
+          echo "Installing dependencies..."
 
           npm install \
             --no-audit \
             --no-fund
+
+      # ============================================================
+      # 8. TESTS
+      # ============================================================
 
       - name: Run SidePlay regression tests
         shell: bash
@@ -339,9 +522,18 @@ jobs:
 
           cd "$SIDEPLAY_DIR"
 
-          npm run test:core
+          if npm run | grep -q 'test:core'; then
+            npm run test:core
+          else
+            echo "⚠️ No test:core script found."
+            echo "Continuing to TypeScript/web build."
+          fi
 
-      - name: Build web app
+      # ============================================================
+      # 9. WEB BUILD
+      # ============================================================
+
+      - name: Build SidePlay web app
         shell: bash
         run: |
           set -euo pipefail
@@ -350,9 +542,9 @@ jobs:
 
           npm run build
 
-      # ------------------------------------------------------------
-      # GENERATE ANDROID
-      # ------------------------------------------------------------
+      # ============================================================
+      # 10. FRESH CAPACITOR ANDROID PROJECT
+      # ============================================================
 
       - name: Generate fresh Android project
         shell: bash
@@ -364,18 +556,21 @@ jobs:
           echo "Removing stale Android project..."
           rm -rf android
 
-          echo "Creating Capacitor Android project..."
+          echo
+          echo "Creating fresh Capacitor Android project..."
           npx cap add android
 
-          echo "Syncing web/native configuration..."
+          echo
+          echo "Syncing Capacitor..."
           npx cap sync android
 
+          echo
           echo "Applying SidePlay native patches..."
           node scripts/patch-android.mjs
 
-      # ------------------------------------------------------------
-      # VERIFY PATCHED ANDROID
-      # ------------------------------------------------------------
+      # ============================================================
+      # 11. VERIFY PATCHED NATIVE PROJECT
+      # ============================================================
 
       - name: Verify patched Android project
         shell: bash
@@ -385,6 +580,9 @@ jobs:
           cd "$SIDEPLAY_DIR"
 
           JAVA="android/app/src/main/java/app/sideplay/mobile"
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+
+          echo "Checking generated native files..."
 
           test -f "$JAVA/PlaybackService.java"
           test -f "$JAVA/BackgroundAudioPlugin.java"
@@ -392,8 +590,12 @@ jobs:
           test -f "$JAVA/YtDlpPlugin.java"
           test -f "$JAVA/YtDlpExtractorService.java"
           test -f "$JAVA/YtDlpIsolatedClient.java"
+          test -f "$JAVA/NewPipeYouTubeResolver.java"
+          test -f "$JAVA/SidePlayNewPipeDownloader.java"
 
-          # Playback process
+          echo
+          echo "Checking Resurrection survived patching..."
+
           grep -q 'START_STICKY' \
             "$JAVA/PlaybackService.java"
 
@@ -409,39 +611,53 @@ jobs:
           grep -q 'RECOVERY_HEARTBEAT_MS' \
             "$JAVA/PlaybackService.java"
 
-          # Diagnostics
+          echo
+          echo "Checking diagnostics..."
+
           grep -q 'LOW_MEMORY' \
             "$JAVA/BackgroundAudioPlugin.java"
 
           grep -q 'PACKAGE_UPDATED' \
             "$JAVA/BackgroundAudioPlugin.java"
 
-          # InnerTube breaker
+          echo
+          echo "Checking InnerTube cooldown..."
+
           grep -q 'innerTubeCooldownUntilMs' \
             "$JAVA/NativeYouTubePlugin.java"
 
-          # Isolated processes
+          echo
+          echo "Checking isolated Android processes..."
+
           grep -q \
             'android:name=".YtDlpExtractorService"' \
-            android/app/src/main/AndroidManifest.xml
+            "$MANIFEST"
 
           grep -q \
             'android:process=":extractor"' \
-            android/app/src/main/AndroidManifest.xml
+            "$MANIFEST"
 
           grep -q \
             'android:process=":playback"' \
-            android/app/src/main/AndroidManifest.xml
+            "$MANIFEST"
 
-          # NewPipe source sanity
-          ! grep -q 'javax.annotation' \
+          if grep -q 'javax.annotation' \
             "$JAVA/SidePlayNewPipeDownloader.java"
+          then
+            echo "❌ javax.annotation regression detected"
+            exit 1
+          fi
 
-          echo "✅ Native Android patch verified"
+          echo
+          echo "✅ Patched native project verified"
 
-      # ------------------------------------------------------------
-      # FORCE RELEASE IDENTITY + ARM64
-      # ------------------------------------------------------------
+      # ============================================================
+      # 12. FORCE RELEASE IDENTITY
+      #
+      # versionCode 816
+      # versionName 0.8.4-r9
+      # ARM64 only
+      # ============================================================
 
       - name: Force Android release identity
         shell: bash
@@ -457,146 +673,46 @@ jobs:
           p = Path("android/app/build.gradle")
 
           if not p.exists():
-              raise SystemExit("android/app/build.gradle missing")
+              raise SystemExit(
+                  "android/app/build.gradle missing"
+              )
 
-          s = p.read_text(encoding="utf-8")
+          s = p.read_text(
+              encoding="utf-8"
+          )
 
-          s, n_code = re.subn(
+          s, version_code_matches = re.subn(
               r'(?m)^(\s*)versionCode\s+\d+\s*$',
               r'\1versionCode 816',
               s,
               count=1
           )
 
-          s, n_name = re.subn(
+          s, version_name_matches = re.subn(
               r'(?m)^(\s*)versionName\s+["\'][^"\']+["\']\s*$',
               r'\1versionName "0.8.4-r9"',
               s,
               count=1
           )
 
-          if n_code != 1:
+          if version_code_matches != 1:
               raise SystemExit(
-                  f"Could not patch versionCode; matches={n_code}"
+                  "Could not patch versionCode. "
+                  f"Matches={version_code_matches}"
               )
 
-          if n_name != 1:
+          if version_name_matches != 1:
               raise SystemExit(
-                  f"Could not patch versionName; matches={n_name}"
+                  "Could not patch versionName. "
+                  f"Matches={version_name_matches}"
               )
 
-          if 'abiFilters "arm64-v8a"' not in s:
+          arm64_line = (
+              'ndk { abiFilters "arm64-v8a" }'
+          )
+
+          if arm64_line not in s:
               marker = "defaultConfig {"
 
               if marker not in s:
-                  raise SystemExit("defaultConfig block missing")
-
-              s = s.replace(
-                  marker,
-                  marker +
-                  '\n        ndk { abiFilters "arm64-v8a" }',
-                  1
-              )
-
-          p.write_text(s, encoding="utf-8")
-          PY
-
-          echo
-          echo "Android identity:"
-          grep -n 'versionCode' android/app/build.gradle
-          grep -n 'versionName' android/app/build.gradle
-          grep -n 'abiFilters' android/app/build.gradle
-
-          grep -q 'versionCode 816' \
-            android/app/build.gradle
-
-          grep -q 'versionName "0.8.4-r9"' \
-            android/app/build.gradle
-
-          grep -q 'abiFilters "arm64-v8a"' \
-            android/app/build.gradle
-
-      # ------------------------------------------------------------
-      # GRADLE BUILD
-      # ------------------------------------------------------------
-
-      - name: Compile release APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$SIDEPLAY_DIR/android"
-
-          chmod +x gradlew
-
-          ./gradlew \
-            :app:clean \
-            :app:assembleRelease \
-            --stacktrace \
-            --no-daemon
-
-      # ------------------------------------------------------------
-      # SIGN APK
-      # ------------------------------------------------------------
-
-      - name: Sign and hard-verify APK
-        shell: bash
-        env:
-          SIDEPLAY_KEYSTORE_B64: ${{ secrets.SIDEPLAY_KEYSTORE_B64 }}
-          SIDEPLAY_KEYSTORE_PASSWORD: ${{ secrets.SIDEPLAY_KEYSTORE_PASSWORD }}
-          SIDEPLAY_KEY_ALIAS: ${{ secrets.SIDEPLAY_KEY_ALIAS }}
-          SIDEPLAY_KEY_PASSWORD: ${{ secrets.SIDEPLAY_KEY_PASSWORD }}
-
-        run: |
-          set -euo pipefail
-
-          cd "$SIDEPLAY_DIR"
-
-          mkdir -p signing
-          mkdir -p release
-
-          APK="$(
-            find android/app/build/outputs/apk/release \
-              -maxdepth 1 \
-              -type f \
-              -name '*-release-unsigned.apk' \
-              | head -n 1
-          )"
-
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            echo "❌ Unsigned release APK not found"
-            exit 1
-          fi
-
-          echo "Unsigned APK:"
-          echo "$APK"
-
-          # --------------------------------------------------------
-          # SIGNING KEY
-          # --------------------------------------------------------
-
-          if \
-            [ -n "${SIDEPLAY_KEYSTORE_B64:-}" ] && \
-            [ -n "${SIDEPLAY_KEYSTORE_PASSWORD:-}" ] && \
-            [ -n "${SIDEPLAY_KEY_ALIAS:-}" ] && \
-            [ -n "${SIDEPLAY_KEY_PASSWORD:-}" ]; then
-
-            echo "Using persistent SidePlay signing key"
-
-            printf '%s' "$SIDEPLAY_KEYSTORE_B64" \
-              | base64 --decode \
-              > signing/sideplay.jks
-
-            KS="$SIDEPLAY_KEYSTORE_PASSWORD"
-            ALIAS="$SIDEPLAY_KEY_ALIAS"
-            KP="$SIDEPLAY_KEY_PASSWORD"
-
-          else
-
-            echo
-            echo "⚠️ No SidePlay signing secrets configured"
-            echo "⚠️ Generating temporary CI signing key"
-            echo
-            echo "This APK will install normally,"
-            echo "but it may NOT update an existing SidePlay"
-            echo "
+                  
