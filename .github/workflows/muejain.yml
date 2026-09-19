@@ -1,20 +1,22 @@
-name: Build StickerForge Android APK
+name: SidePlay R10.2 — Background Survival APK
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build StickerForge APK
+    name: Build SidePlay v0.9.2-r10.2
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+
+    env:
+      ZIP_NAME: SidePlay-v0.9.2-R10.2-BACKGROUND-SURVIVAL.zip
+      EXPECTED_VERSION: 0.9.2-r10.2
+      NODE_VERSION: "24"
+      JAVA_VERSION: "17"
 
     steps:
       # ------------------------------------------------------------
@@ -24,274 +26,263 @@ jobs:
         uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # 2. JAVA 17
+      # 2. VERIFY ZIP EXISTS
       # ------------------------------------------------------------
-      - name: Set up Java 17
+      - name: Verify SidePlay source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Looking for: $ZIP_NAME"
+
+          if [ ! -f "$ZIP_NAME" ]; then
+            echo "::error::Could not find $ZIP_NAME in repository root."
+            echo ""
+            echo "Files in repository root:"
+            ls -lah
+            exit 1
+          fi
+
+          echo "Found source ZIP:"
+          ls -lh "$ZIP_NAME"
+
+      # ------------------------------------------------------------
+      # 3. EXTRACT SOURCE
+      # ------------------------------------------------------------
+      - name: Extract SidePlay
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf sideplay-build
+          mkdir -p sideplay-build
+
+          unzip -q "$ZIP_NAME" -d sideplay-build
+
+          echo "ZIP extracted."
+
+          # Handle ZIPs containing either:
+          #   package.json
+          # or:
+          #   SomeFolder/package.json
+
+          PACKAGE_JSON="$(find sideplay-build -name package.json \
+            -not -path '*/node_modules/*' \
+            -print -quit)"
+
+          if [ -z "$PACKAGE_JSON" ]; then
+            echo "::error::package.json not found after extraction."
+            find sideplay-build -maxdepth 3 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PACKAGE_JSON")"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Detected project: $PROJECT_DIR"
+
+      # ------------------------------------------------------------
+      # 4. NODE
+      # ------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.PROJECT_DIR }}/package-lock.json
+
+      # ------------------------------------------------------------
+      # 5. JAVA
+      # ------------------------------------------------------------
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.JAVA_VERSION }}
 
       # ------------------------------------------------------------
-      # 3. GRADLE
-      # StickerForge source currently doesn't contain a wrapper,
-      # so GitHub installs Gradle for us.
+      # 6. ANDROID SDK
       # ------------------------------------------------------------
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       # ------------------------------------------------------------
-      # 4. SHOW REPOSITORY FILES
-      # Useful if GitHub ever decides to act possessed.
+      # 7. VERIFY VERSION
       # ------------------------------------------------------------
-      - name: Inspect repository
+      - name: Verify SidePlay version
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "REPOSITORY CONTENTS"
-          echo "======================================"
+          ACTUAL_VERSION="$(node -p "require('./package.json').version")"
 
-          find . -maxdepth 3 -type f | sort
+          echo "Expected: $EXPECTED_VERSION"
+          echo "Actual:   $ACTUAL_VERSION"
 
-      # ------------------------------------------------------------
-      # 5. FIND + EXTRACT STICKERFORGE ZIP
-      #
-      # Accepts things like:
-      # StickerForgeAndroid-source.zip
-      # StickerForgeAndroid-source (1).zip
-      # stickerforge-whatever.zip
-      # ------------------------------------------------------------
-      - name: Find and extract StickerForge
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "======================================"
-          echo "SEARCHING FOR STICKERFORGE ZIP"
-          echo "======================================"
-
-          ZIP="$(find . -maxdepth 3 -type f \
-            \( \
-              -iname 'StickerForgeAndroid*.zip' \
-              -o -iname '*StickerForge*.zip' \
-              -o -iname '*stickerforge*.zip' \
-            \) \
-            | head -1)"
-
-          if [ -z "$ZIP" ]; then
-            echo ""
-            echo "ERROR: Could not find a StickerForge ZIP."
-            echo ""
-            echo "ZIP files found in repository:"
-            find . -maxdepth 3 -type f -iname '*.zip' -print || true
-            echo ""
-            echo "Repository contents:"
-            find . -maxdepth 3 -type f | sort
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Version mismatch."
             exit 1
           fi
 
-          echo "FOUND ZIP:"
-          echo "$ZIP"
-
-          rm -rf "$GITHUB_WORKSPACE/extracted"
-          mkdir -p "$GITHUB_WORKSPACE/extracted"
-
-          unzip -q "$ZIP" -d "$GITHUB_WORKSPACE/extracted"
-
-          echo ""
-          echo "======================================"
-          echo "EXTRACTED CONTENTS"
-          echo "======================================"
-
-          find "$GITHUB_WORKSPACE/extracted" \
-            -maxdepth 5 \
-            -type f \
-            | sort
+          echo "Version verified."
 
       # ------------------------------------------------------------
-      # 6. FIND ACTUAL ANDROID PROJECT
-      #
-      # We don't assume what directory exists inside the ZIP.
-      # Instead, find settings.gradle / settings.gradle.kts.
+      # 8. INSTALL DEPENDENCIES
       # ------------------------------------------------------------
-      - name: Locate Android project
-        id: project
+      - name: Install dependencies
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "LOCATING ANDROID PROJECT"
-          echo "======================================"
-
-          SETTINGS="$(find "$GITHUB_WORKSPACE/extracted" \
-            -type f \
-            \( \
-              -name 'settings.gradle' \
-              -o -name 'settings.gradle.kts' \
-            \) \
-            | head -1)"
-
-          if [ -z "$SETTINGS" ]; then
-            echo ""
-            echo "ERROR: settings.gradle was not found."
-            echo ""
-            echo "Extracted files:"
-            find "$GITHUB_WORKSPACE/extracted" \
-              -maxdepth 6 \
-              -type f \
-              | sort
-            exit 1
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS")"
+      # ------------------------------------------------------------
+      # 9. BUILD WEB APP
+      # ------------------------------------------------------------
+      - name: Build SidePlay web bundle
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
 
-          echo "Settings file:"
-          echo "$SETTINGS"
-
-          echo ""
-          echo "Android project directory:"
-          echo "$PROJECT_DIR"
-
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          npm run build
 
       # ------------------------------------------------------------
-      # 7. VERIFY PROJECT
+      # 10. CAPACITOR SYNC
+      # ------------------------------------------------------------
+      - name: Sync Capacitor Android
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          npx cap sync android
+
+      # ------------------------------------------------------------
+      # 11. VERIFY ANDROID PROJECT
       # ------------------------------------------------------------
       - name: Verify Android project
-        working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "JAVA"
-          echo "======================================"
+          if [ ! -d android ]; then
+            echo "::error::android/ directory missing."
+            exit 1
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "::error::android/gradlew missing."
+            exit 1
+          fi
+
+          chmod +x android/gradlew
+
+          echo "Android project OK."
+
+      # ------------------------------------------------------------
+      # 12. PLAYBACK SERVICE SANITY CHECK
+      # ------------------------------------------------------------
+      - name: Verify Background PlaybackService
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          PLAYBACK_SERVICE="$(find android \
+            -type f \
+            -name 'PlaybackService.java' \
+            -print -quit)"
+
+          if [ -z "$PLAYBACK_SERVICE" ]; then
+            echo "::error::PlaybackService.java not found after Capacitor sync."
+            exit 1
+          fi
+
+          echo "PlaybackService:"
+          echo "$PLAYBACK_SERVICE"
+
+          if ! grep -q "MediaSessionService" "$PLAYBACK_SERVICE"; then
+            echo "::error::PlaybackService does not appear to use MediaSessionService."
+            exit 1
+          fi
+
+          echo "Background PlaybackService detected."
+
+      # ------------------------------------------------------------
+      # 13. SHOW GRADLE / JAVA INFO
+      # ------------------------------------------------------------
+      - name: Android build diagnostics
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: |
+          set -euo pipefail
+
+          echo "JAVA:"
           java -version
 
           echo ""
-          echo "======================================"
-          echo "GRADLE"
-          echo "======================================"
-          gradle --version
-
-          echo ""
-          echo "======================================"
-          echo "ANDROID PROJECT"
-          echo "======================================"
-          pwd
-          find . -maxdepth 4 -type f | sort
-
-          if [ ! -d "app" ]; then
-            echo ""
-            echo "ERROR: app/ module not found."
-            exit 1
-          fi
-
-          if [ ! -f "app/build.gradle" ] && \
-             [ ! -f "app/build.gradle.kts" ]; then
-            echo ""
-            echo "ERROR: app/build.gradle not found."
-            exit 1
-          fi
+          echo "GRADLE:"
+          ./gradlew --version
 
       # ------------------------------------------------------------
-      # 8. CLEAN
+      # 14. BUILD DEBUG APK
       # ------------------------------------------------------------
-      - name: Clean project
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Build APK
         shell: bash
-        run: |
-          set -euo pipefail
-          gradle clean --stacktrace
-
-      # ------------------------------------------------------------
-      # 9. COMPILE DEBUG APK
-      # ------------------------------------------------------------
-      - name: Build StickerForge
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "BUILDING STICKERFORGE"
-          echo "======================================"
-
-          gradle assembleDebug \
+          ./gradlew clean assembleDebug \
             --stacktrace \
-            --warning-mode all
+            --no-daemon
 
       # ------------------------------------------------------------
-      # 10. FIND GENERATED APK
+      # 15. LOCATE APK
       # ------------------------------------------------------------
-      - name: Find generated APK
-        id: apk
+      - name: Locate APK
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "SEARCHING FOR APK"
-          echo "======================================"
-
-          APK="$(find "$GITHUB_WORKSPACE/extracted" \
+          APK="$(find android/app/build/outputs/apk \
             -type f \
-            -path '*/build/outputs/apk/debug/*.apk' \
-            | head -1)"
+            -name '*.apk' \
+            -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo ""
-            echo "ERROR: Build completed but no APK was found."
-            echo ""
-            echo "Build outputs:"
-            find "$GITHUB_WORKSPACE/extracted" \
-              -path '*/build/outputs/*' \
-              -type f \
-              -print || true
+            echo "::error::APK was not produced."
+            find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
 
-          echo "FOUND APK:"
-          echo "$APK"
-
-          ls -lh "$APK"
-
-          mkdir -p "$GITHUB_WORKSPACE/stickerforge-output"
+          mkdir -p release
 
           cp "$APK" \
-            "$GITHUB_WORKSPACE/stickerforge-output/StickerForge-debug.apk"
+            "release/SidePlay-v0.9.2-r10.2-BACKGROUND-SURVIVAL.apk"
 
-          echo ""
-          echo "Final APK:"
-          ls -lh \
-            "$GITHUB_WORKSPACE/stickerforge-output/StickerForge-debug.apk"
+          echo "APK_PATH=$PROJECT_DIR/release/SidePlay-v0.9.2-r10.2-BACKGROUND-SURVIVAL.apk" \
+            >> "$GITHUB_ENV"
+
+          echo "APK created:"
+          ls -lh release/*.apk
 
       # ------------------------------------------------------------
-      # 11. UPLOAD APK TO GITHUB ACTIONS
+      # 16. UPLOAD APK
       # ------------------------------------------------------------
-      - name: Upload StickerForge APK
+      - name: Upload SidePlay APK
         uses: actions/upload-artifact@v4
         with:
-          name: StickerForge-Android-APK
-          path: stickerforge-output/StickerForge-debug.apk
+          name: SidePlay-v0.9.2-r10.2-BACKGROUND-SURVIVAL
+          path: ${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 30
-
-      # ------------------------------------------------------------
-      # 12. UPLOAD BUILD REPORT IF SOMETHING FAILED
-      # ------------------------------------------------------------
-      - name: Upload build diagnostics on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: StickerForge-Build-Diagnostics
-          path: |
-            extracted/**/build/reports/**
-            extracted/**/build/outputs/logs/**
-          if-no-files-found: ignore
-          retention-days: 7
