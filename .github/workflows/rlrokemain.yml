@@ -36,15 +36,12 @@ jobs:
           set -euo pipefail
 
           echo "=========================================="
-          echo " SidePlay R10.2 — Background Survival"
+          echo " SIDEPLAY R10.2 — BACKGROUND SURVIVAL"
           echo "=========================================="
-          echo ""
-          echo "Looking for:"
-          echo "$ZIP_NAME"
           echo ""
 
           if [ ! -f "$ZIP_NAME" ]; then
-            echo "::error::Could not find $ZIP_NAME in repository root."
+            echo "::error::Could not find $ZIP_NAME"
             echo ""
             echo "Repository contents:"
             ls -lah
@@ -56,7 +53,7 @@ jobs:
 
 
       # ============================================================
-      # EXTRACT SOURCE
+      # EXTRACT
       # ============================================================
 
       - name: Extract SidePlay
@@ -67,12 +64,7 @@ jobs:
           rm -rf sideplay-build
           mkdir -p sideplay-build
 
-          echo "Extracting $ZIP_NAME..."
-
           unzip -q "$ZIP_NAME" -d sideplay-build
-
-          echo ""
-          echo "Searching for SidePlay package.json..."
 
           PACKAGE_JSON="$(
             find sideplay-build \
@@ -82,9 +74,7 @@ jobs:
           )"
 
           if [ -z "$PACKAGE_JSON" ]; then
-            echo "::error::package.json not found after extraction."
-            echo ""
-            echo "Extracted files:"
+            echo "::error::package.json not found."
             find sideplay-build -maxdepth 3 -type f | head -100
             exit 1
           fi
@@ -94,19 +84,15 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Detected SidePlay project:"
+          echo "SidePlay project:"
           echo "$PROJECT_DIR"
 
           echo ""
-          echo "Project contents:"
           ls -lah "$PROJECT_DIR"
 
 
       # ============================================================
       # NODE 24
-      #
-      # NO npm caching here.
-      # The project directory is discovered dynamically.
       # ============================================================
 
       - name: Setup Node.js 24
@@ -115,25 +101,22 @@ jobs:
           node-version: "24"
 
 
-      - name: Verify Node environment
+      - name: Verify Node
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=========================================="
-          echo " NODE"
-          echo "=========================================="
-
+          echo "Node:"
           node --version
+
+          echo ""
+          echo "npm:"
           npm --version
 
           echo ""
           echo "PROJECT_DIR=$PROJECT_DIR"
 
-          if [ ! -f "$PROJECT_DIR/package.json" ]; then
-            echo "::error::PROJECT_DIR is invalid."
-            exit 1
-          fi
+          test -f "$PROJECT_DIR/package.json"
 
 
       # ============================================================
@@ -151,23 +134,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "=========================================="
-          echo " JAVA"
-          echo "=========================================="
-
           java -version
 
 
       # ============================================================
-      # USE GITHUB RUNNER'S PREINSTALLED ANDROID SDK
+      # ANDROID SDK
       #
-      # IMPORTANT:
-      # No android-actions/setup-android.
-      # No sdkmanager invocation.
+      # Do NOT run setup-android/sdkmanager.
+      # ubuntu-latest already contains Android SDK.
       # ============================================================
 
-      - name: Detect preinstalled Android SDK
+      - name: Detect GitHub Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -176,57 +153,40 @@ jobs:
           echo " ANDROID SDK"
           echo "=========================================="
 
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
-
           SDK=""
 
           if [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME" ]; then
             SDK="$ANDROID_HOME"
+
           elif [ -n "${ANDROID_SDK_ROOT:-}" ] && [ -d "$ANDROID_SDK_ROOT" ]; then
             SDK="$ANDROID_SDK_ROOT"
+
           elif [ -d "/usr/local/lib/android/sdk" ]; then
             SDK="/usr/local/lib/android/sdk"
-          fi
 
-          if [ -z "$SDK" ]; then
-            echo "::error::No Android SDK installation found on GitHub runner."
+          else
+            echo "::error::Android SDK not found."
             exit 1
           fi
-
-          echo ""
-          echo "Using Android SDK:"
-          echo "$SDK"
 
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Installed platforms:"
-
-          if [ -d "$SDK/platforms" ]; then
-            ls -1 "$SDK/platforms"
-          else
-            echo "::error::Android platforms directory missing."
-            exit 1
-          fi
+          echo "Using:"
+          echo "$SDK"
 
           echo ""
-          echo "Installed build-tools:"
-
-          if [ -d "$SDK/build-tools" ]; then
-            ls -1 "$SDK/build-tools"
-          else
-            echo "::error::Android build-tools directory missing."
-            exit 1
-          fi
+          echo "Platforms:"
+          ls -1 "$SDK/platforms" || true
 
           echo ""
-          echo "Android SDK ready."
+          echo "Build tools:"
+          ls -1 "$SDK/build-tools" || true
 
 
       # ============================================================
-      # VERIFY SIDEPLAY VERSION
+      # VERIFY VERSION
       # ============================================================
 
       - name: Verify SidePlay version
@@ -235,10 +195,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          ACTUAL_VERSION="$(node -p "require('./package.json').version")"
+          ACTUAL_VERSION="$(
+            node -p "require('./package.json').version"
+          )"
 
-          echo "Expected version: $EXPECTED_VERSION"
-          echo "Actual version:   $ACTUAL_VERSION"
+          echo "Expected: $EXPECTED_VERSION"
+          echo "Actual:   $ACTUAL_VERSION"
 
           if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
             echo "::error::SidePlay version mismatch."
@@ -246,14 +208,14 @@ jobs:
           fi
 
           echo ""
-          echo "SidePlay version verified."
+          echo "Version OK."
 
 
       # ============================================================
-      # INSTALL NPM DEPENDENCIES
+      # NPM INSTALL
       # ============================================================
 
-      - name: Install npm dependencies
+      - name: Install dependencies
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -264,21 +226,59 @@ jobs:
           echo "=========================================="
 
           if [ -f package-lock.json ]; then
-            echo "package-lock.json detected."
-            echo "Running npm ci..."
             npm ci
           else
-            echo "No package-lock.json detected."
-            echo "Running npm install..."
             npm install
           fi
 
 
       # ============================================================
-      # BUILD WEB APPLICATION
+      # VERIFY CAPACITOR PACKAGES
       # ============================================================
 
-      - name: Build SidePlay web bundle
+      - name: Verify Capacitor
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "Capacitor CLI:"
+          npx cap --version
+
+          echo ""
+          echo "Capacitor config:"
+
+          if [ -f capacitor.config.ts ]; then
+            echo "capacitor.config.ts"
+          elif [ -f capacitor.config.js ]; then
+            echo "capacitor.config.js"
+          elif [ -f capacitor.config.json ]; then
+            echo "capacitor.config.json"
+          else
+            echo "::error::Capacitor configuration missing."
+            exit 1
+          fi
+
+          echo ""
+          echo "Checking @capacitor/android..."
+
+          node -e "
+          try {
+            console.log(
+              require('@capacitor/android/package.json').version
+            );
+          } catch (e) {
+            console.error('@capacitor/android is missing');
+            process.exit(1);
+          }
+          "
+
+
+      # ============================================================
+      # WEB BUILD
+      # ============================================================
+
+      - name: Build SidePlay web app
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -290,8 +290,127 @@ jobs:
 
           npm run build
 
+
+      # ============================================================
+      # BACKUP NATIVE SOURCES
+      #
+      # We do this BEFORE touching android/.
+      # ============================================================
+
+      - name: Discover SidePlay native Android sources
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo " SIDEPPLAY NATIVE SOURCES"
+          echo "=========================================="
+
           echo ""
-          echo "Web application built."
+          echo "Native directory contents:"
+
+          find native -maxdepth 5 -type f 2>/dev/null || true
+
+          PLAYBACK_SOURCE="$(
+            find native \
+              -type f \
+              -name 'PlaybackService.java' \
+              -print -quit 2>/dev/null || true
+          )"
+
+          if [ -z "$PLAYBACK_SOURCE" ]; then
+            echo "::error::native PlaybackService.java not found."
+            exit 1
+          fi
+
+          echo ""
+          echo "PlaybackService source:"
+          echo "$PLAYBACK_SOURCE"
+
+          NATIVE_JAVA_DIR="$(dirname "$PLAYBACK_SOURCE")"
+
+          echo "NATIVE_JAVA_DIR=$NATIVE_JAVA_DIR" \
+            >> "$GITHUB_ENV"
+
+          PACKAGE="$(
+            grep -m1 '^package ' "$PLAYBACK_SOURCE" \
+              | sed 's/^package //' \
+              | sed 's/;//' \
+              | tr -d '\r'
+          )"
+
+          if [ -z "$PACKAGE" ]; then
+            echo "::error::Could not determine Java package."
+            exit 1
+          fi
+
+          echo ""
+          echo "Java package:"
+          echo "$PACKAGE"
+
+          PACKAGE_PATH="$(echo "$PACKAGE" | tr '.' '/')"
+
+          echo "NATIVE_PACKAGE=$PACKAGE" \
+            >> "$GITHUB_ENV"
+
+          echo "NATIVE_PACKAGE_PATH=$PACKAGE_PATH" \
+            >> "$GITHUB_ENV"
+
+          echo ""
+          echo "Native Java files:"
+
+          find "$NATIVE_JAVA_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.java' \
+            -print
+
+
+      # ============================================================
+      # CREATE ANDROID PLATFORM IF MISSING
+      # ============================================================
+
+      - name: Ensure Capacitor Android platform exists
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo " ANDROID PLATFORM"
+          echo "=========================================="
+
+          if [ -f android/app/build.gradle ] || \
+             [ -f android/app/build.gradle.kts ]; then
+
+            echo "Existing Capacitor Android platform found."
+
+          else
+
+            echo "Android platform is missing."
+            echo "Creating it now..."
+
+            rm -rf android
+
+            npx cap add android
+
+            echo ""
+            echo "Android platform created."
+
+          fi
+
+          if [ ! -d android ]; then
+            echo "::error::Capacitor failed to create android/."
+            exit 1
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "::error::Gradle wrapper missing."
+            exit 1
+          fi
+
+          chmod +x android/gradlew
 
 
       # ============================================================
@@ -311,90 +430,109 @@ jobs:
           npx cap sync android
 
           echo ""
-          echo "Capacitor Android sync completed."
+          echo "Capacitor sync complete."
 
 
       # ============================================================
-      # VERIFY ANDROID PROJECT
+      # RESTORE CUSTOM SIDEPPLAY JAVA
+      #
+      # Important: AFTER cap sync.
       # ============================================================
 
-      - name: Verify Android project
-        shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          set -euo pipefail
-
-          if [ ! -d android ]; then
-            echo "::error::android/ directory missing."
-            exit 1
-          fi
-
-          if [ ! -f android/gradlew ]; then
-            echo "::error::android/gradlew missing."
-            exit 1
-          fi
-
-          chmod +x android/gradlew
-
-          echo "Android project detected."
-          echo ""
-
-          ls -lh android/gradlew
-
-
-      # ============================================================
-      # VERIFY BACKGROUND PLAYBACK SERVICE
-      # ============================================================
-
-      - name: Verify Background PlaybackService
+      - name: Restore SidePlay native Android code
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
           echo "=========================================="
-          echo " PLAYBACK SERVICE"
+          echo " RESTORE NATIVE PLAYBACK ENGINE"
+          echo "=========================================="
+
+          TARGET_DIR="android/app/src/main/java/$NATIVE_PACKAGE_PATH"
+
+          mkdir -p "$TARGET_DIR"
+
+          echo ""
+          echo "Source:"
+          echo "$NATIVE_JAVA_DIR"
+
+          echo ""
+          echo "Destination:"
+          echo "$TARGET_DIR"
+
+          echo ""
+          echo "Copying Java sources..."
+
+          find "$NATIVE_JAVA_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.java' \
+            -exec cp -v {} "$TARGET_DIR/" \;
+
+          echo ""
+          echo "Installed SidePlay native sources:"
+
+          find "$TARGET_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.java' \
+            -print
+
+
+      # ============================================================
+      # VERIFY PLAYBACK SERVICE SURVIVED
+      # ============================================================
+
+      - name: Verify SidePlay PlaybackService
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo " PLAYBACK SERVICE CHECK"
           echo "=========================================="
 
           PLAYBACK_SERVICE="$(
-            find android \
+            find android/app/src/main/java \
               -type f \
               -name 'PlaybackService.java' \
               -print -quit
           )"
 
           if [ -z "$PLAYBACK_SERVICE" ]; then
-            echo "::error::PlaybackService.java not found."
+            echo "::error::PlaybackService.java missing from Android project."
             exit 1
           fi
 
-          echo "PlaybackService:"
+          echo "Found:"
           echo "$PLAYBACK_SERVICE"
 
           echo ""
 
-          if ! grep -q "MediaSessionService" "$PLAYBACK_SERVICE"; then
-            echo "::error::PlaybackService does not use MediaSessionService."
+          if grep -q "MediaSessionService" "$PLAYBACK_SERVICE"; then
+            echo "[OK] MediaSessionService"
+          else
+            echo "::error::MediaSessionService implementation missing."
             exit 1
           fi
 
-          echo "MediaSessionService detected."
-
           if grep -q "SidePlay/" "$PLAYBACK_SERVICE"; then
-            echo "SidePlay playback marker detected."
+            echo "[OK] SidePlay playback marker"
           else
-            echo "::warning::SidePlay user-agent marker not found."
+            echo "::warning::SidePlay user-agent marker missing."
           fi
 
           echo ""
-          echo "PlaybackService sanity check passed."
+          echo "PlaybackService check passed."
 
 
       # ============================================================
-      # VERIFY ANDROID MANIFEST
+      # MANIFEST
       # ============================================================
 
-      - name: Verify Android playback manifest
+      - name: Inspect Android Manifest
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -411,37 +549,36 @@ jobs:
             exit 1
           fi
 
-          echo "Checking PlaybackService registration..."
+          echo ""
+          echo "PlaybackService registration:"
 
           if grep -q "PlaybackService" "$MANIFEST"; then
-            echo "PlaybackService registered."
+            echo "[OK] PlaybackService registered"
           else
-            echo "::warning::PlaybackService not found in manifest."
+            echo "::warning::PlaybackService not currently registered in manifest."
           fi
 
           echo ""
-          echo "Checking foreground service permission..."
+          echo "Foreground service permission:"
 
           if grep -q "FOREGROUND_SERVICE" "$MANIFEST"; then
-            echo "FOREGROUND_SERVICE permission detected."
+            echo "[OK] FOREGROUND_SERVICE"
           else
-            echo "::warning::FOREGROUND_SERVICE permission not found."
+            echo "::warning::FOREGROUND_SERVICE missing."
           fi
 
           echo ""
-          echo "Checking WAKE_LOCK..."
+          echo "WAKE_LOCK:"
 
           if grep -q "WAKE_LOCK" "$MANIFEST"; then
-            echo "WAKE_LOCK permission detected."
+            echo "[OK] WAKE_LOCK"
           else
-            echo "::warning::WAKE_LOCK permission not found."
+            echo "::warning::WAKE_LOCK missing."
           fi
 
 
       # ============================================================
-      # CREATE LOCAL.PROPERTIES
-      #
-      # This explicitly tells Gradle which Android SDK to use.
+      # LOCAL.PROPERTIES
       # ============================================================
 
       - name: Configure Android SDK for Gradle
@@ -452,12 +589,12 @@ jobs:
 
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-          echo "Generated android/local.properties:"
+          echo "local.properties:"
           cat local.properties
 
 
       # ============================================================
-      # GRADLE DIAGNOSTICS
+      # GRADLE INFO
       # ============================================================
 
       - name: Gradle diagnostics
@@ -481,14 +618,14 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo " ANDROID"
+          echo " SDK"
           echo "=========================================="
 
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
           echo ""
-          echo "local.properties:"
+
           cat local.properties
 
 
@@ -496,14 +633,14 @@ jobs:
       # BUILD APK
       # ============================================================
 
-      - name: Build SidePlay debug APK
+      - name: Build SidePlay APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
           set -euo pipefail
 
           echo "=========================================="
-          echo " BUILDING SIDEPLAY APK"
+          echo " BUILDING SIDEPLAY"
           echo "=========================================="
           echo ""
 
@@ -524,7 +661,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Searching for APK..."
+          echo "=========================================="
+          echo " FIND APK"
+          echo "=========================================="
 
           APK="$(
             find android/app/build/outputs/apk \
@@ -534,10 +673,10 @@ jobs:
           )"
 
           if [ -z "$APK" ]; then
-            echo "::error::Gradle finished but no APK was found."
+            echo "::error::No APK produced."
 
             echo ""
-            echo "Available build outputs:"
+            echo "Build outputs:"
 
             find android/app/build/outputs \
               -type f \
@@ -545,10 +684,6 @@ jobs:
 
             exit 1
           fi
-
-          echo ""
-          echo "APK found:"
-          echo "$APK"
 
           mkdir -p release
 
@@ -561,24 +696,25 @@ jobs:
           echo "APK_PATH=$ABSOLUTE_APK" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Final APK:"
+          echo "APK:"
           ls -lh "$OUTPUT_APK"
 
 
       # ============================================================
-      # APK SUMMARY
+      # SUMMARY
       # ============================================================
 
-      - name: APK build summary
+      - name: SidePlay build summary
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=========================================="
-          echo " SIDEPLAY BUILD COMPLETE"
-          echo "=========================================="
-
           echo ""
+          echo "=========================================="
+          echo "       SIDEPLAY BUILD COMPLETE"
+          echo "=========================================="
+          echo ""
+
           echo "Version:"
           echo "$EXPECTED_VERSION"
 
@@ -596,7 +732,7 @@ jobs:
 
 
       # ============================================================
-      # UPLOAD APK
+      # UPLOAD
       # ============================================================
 
       - name: Upload SidePlay APK
